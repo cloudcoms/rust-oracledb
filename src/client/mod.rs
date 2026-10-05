@@ -617,7 +617,12 @@ impl Client {
         address: &Address,
         description: &Description,
     ) -> Result<(), Error> {
-        let stream = TcpStream::connect(sock_addr)?;
+        let stream =
+            if let Some(timeout) = self.config.transport_connect_timeout() {
+                TcpStream::connect_timeout(&sock_addr, timeout)?
+            } else {
+                TcpStream::connect(sock_addr)?
+            };
         self.transport.connect(stream, address, &self.config)?;
         let mut address = address.clone();
         let mut connect_data = connect_data.to_string();

@@ -1,5 +1,15 @@
 # <a name="releasenotes"></a> rust-oracledb Release Notes
 
+## cloudcoms fork of 26.0.0-beta.4 (not an Oracle release)
+
+This branch is 26.0.0-beta.4 plus the patches below. It is not published to
+crates.io and is not supported by Oracle.
+
+1.  Cherry-picked from upstream: added support for specifying the transport
+    connect timeout and ensure it is actually used when establishing a
+    connection to the database
+    ([issue 35](https://github.com/oracle/rust-oracledb/issues/35)).
+
 ## rust-oracledb 26.0.0-beta.4 (September 23, 2026)
 
 1.  All of the database type constants have been made references in order to
