@@ -37,9 +37,12 @@ use std::mem;
 use std::net::SocketAddr;
 use std::net::TcpStream;
 use std::net::ToSocketAddrs;
+use std::sync::Arc;
+use std::time::Duration;
 use std::time::Instant;
 
 use crate::bind_params::BindParameters;
+use crate::break_handle::BreakState;
 use crate::config::Address;
 use crate::config::Config;
 use crate::config::Description;
@@ -75,6 +78,18 @@ use capabilities::Capabilities;
 const TTC_SECURITY_CONTEXT_ATTACH_FLAG: u32 = 0x01;
 const TTC_END_USER_SECURITY_CONTEXT_KEY: &str = "ORCL_XS_AUTHZ_CONTEXT";
 
+/// While a break handle exists, the client waits for the database in slices of
+/// at most this length so that it can notice an interrupt request.
+const BREAK_POLL_INTERVAL: Duration = Duration::from_millis(100);
+
+/// Stands in for a call whose interrupt was answered only after the call had
+/// already completed; used to read that answer. It is never sent.
+struct InterruptAckMessage;
+
+impl Message for InterruptAckMessage {
+    fn serialize(&self, _client: &Client, _buf: &mut WriteBuffer) {}
+}
+
 pub struct Client {
     transport: Transport,
     caps: capabilities::Capabilities,
@@ -99,6 +114,10 @@ pub struct Client {
     last_warning: Option<String>,
     security_context: Option<EndUserSecurityContext>,
     temp_lobs_to_close: Vec<Vec<u8>>,
+    break_state: Arc<BreakState>,
+    break_in_progress: bool,
+    break_polling: bool,
+    call_timeout: Option<Duration>,
     in_connect: bool,
     connect_deadline: Option<Instant>,
 }
@@ -112,15 +131,37 @@ impl Client {
         &mut self,
         message: &mut impl Message,
     ) -> Result<Response, Error> {
+        self.sync_break_polling()?;
         message.pre_process(self);
         self.send_message(message)?;
         let mut response = Response::new();
-        if let Err(e) = self.receive_response(message, &mut response) {
+        let mut result = self.receive_response(message, &mut response);
+        if self.break_in_progress {
+            // An interrupt was sent but the call ended before the database
+            // acted on it. The database still answers the interrupt (a break
+            // marker followed by a response, normally ORA-01013). Read that
+            // answer so the next round trip starts clean. An error returned
+            // by the call itself takes precedence.
+            let ack = self.receive_interrupt_ack();
+            result = result.and(ack);
+        }
+        if let Err(e) = result {
             response.cleanup_pending_values(self);
             Err(e)
         } else {
             Ok(response)
         }
+    }
+
+    /// Reads the answer of the database to an interrupt sent during a call
+    /// that completed before the database acted on it.
+    fn receive_interrupt_ack(&mut self) -> Result<(), Error> {
+        let mut response = Response::new();
+        let result =
+            self.receive_response(&mut InterruptAckMessage, &mut response);
+        response.cleanup_pending_values(self);
+        self.finish_break();
+        result
     }
 
     /// Arms the remaining connect time as the read timeout while a connect
@@ -134,6 +175,12 @@ impl Client {
             self.transport.set_read_timeout(Some(remaining))?;
         }
         Ok(())
+    }
+
+    /// Returns whether the call timeout elapsed since the given instant.
+    fn call_timeout_expired(&self, wait_started: Instant) -> bool {
+        self.call_timeout
+            .is_some_and(|timeout| wait_started.elapsed() >= timeout)
     }
 
     /// Opens a TCP connection to the given address, honouring the transport
@@ -179,6 +226,43 @@ impl Client {
         }))
     }
 
+    /// Ends the interrupt handling for the current call.
+    fn finish_break(&mut self) {
+        self.break_in_progress = false;
+        self.break_state.clear();
+    }
+
+    /// Sends an in-band interrupt for the call in progress.
+    fn send_break(&mut self) -> Result<(), Error> {
+        self.break_in_progress = true;
+        self.break_state.clear();
+        self.send_marker(constants::MARKER_TYPE_INTERRUPT)
+    }
+
+    /// Returns the read timeout to use on the socket outside of connect.
+    fn socket_timeout(&self) -> Option<Duration> {
+        if self.break_polling {
+            Some(
+                self.call_timeout.map_or(BREAK_POLL_INTERVAL, |t| {
+                    t.min(BREAK_POLL_INTERVAL)
+                }),
+            )
+        } else {
+            self.call_timeout
+        }
+    }
+
+    /// Switches to waiting in short slices once a break handle exists (and
+    /// back once the handles are invalidated).
+    fn sync_break_polling(&mut self) -> Result<(), Error> {
+        let enabled = self.break_state.is_enabled();
+        if enabled != self.break_polling {
+            self.break_polling = enabled;
+            self.transport.set_read_timeout(self.socket_timeout())?;
+        }
+        Ok(())
+    }
+
     /// Process a control packet received from the database.
     fn process_control_packet(&mut self, packet: Packet) -> Result<(), Error> {
         let mut resp = Response::new();
@@ -199,7 +283,14 @@ impl Client {
     /// Receives a data packet from the database. Control packets and marker
     /// packets are processed. Only data packets are returned.
     fn receive_data_packet(&mut self) -> Result<(Packet, bool), Error> {
+        let wait_started = Instant::now();
         loop {
+            if self.break_polling
+                && !self.break_in_progress
+                && self.break_state.is_requested()
+            {
+                self.send_break()?;
+            }
             if self.in_connect {
                 self.arm_connect_deadline()?;
             }
@@ -222,6 +313,12 @@ impl Client {
                         // the connection is discarded on any connect failure
                         if self.in_connect {
                             return Err(Error::connect_timeout_exceeded());
+                        }
+                        // a short poll slice elapsed: check for a request
+                        if self.break_polling
+                            && !self.call_timeout_expired(wait_started)
+                        {
+                            continue;
                         }
                         let packet = self.recover_from_error(err)?;
                         return Ok((packet, false));
@@ -285,7 +382,12 @@ impl Client {
     /// occurs during the recovery process, the connection is deemed unusable
     /// and the connection closed and an error returned.
     fn recover_from_error(&mut self, err: Error) -> Result<Packet, Error> {
-        self.send_marker(constants::MARKER_TYPE_INTERRUPT)
+        let interrupt = if self.break_in_progress {
+            Ok(())
+        } else {
+            self.send_break()
+        };
+        interrupt
             .and_then(|_| self.reset())
             .map_err(|_| self.unrecoverable_error())
             .and_then(|_| Err(err))
@@ -296,14 +398,34 @@ impl Client {
     /// The packet received after the reset has completed is returned to the
     /// caller. Note that some databases return multiple reset markers so
     /// these are also accommodated.
+    ///
+    /// While waiting in short slices for a break handle, the wait is bounded
+    /// by one call timeout (if one is set), like a single read without a
+    /// break handle. Any further marker packets that follow the reset marker
+    /// are skipped, as python-oracledb does.
     fn reset(&mut self) -> Result<Packet, Error> {
         self.send_marker(constants::MARKER_TYPE_RESET)?;
+        let deadline = self.call_timeout.map(|t| Instant::now() + t);
         let mut reset_received = false;
         loop {
-            let packet = self.transport.receive_packet()?;
+            let packet = match self.transport.receive_packet() {
+                Ok(packet) => packet,
+                Err(err)
+                    if err.is_call_timeout_exceeded()
+                        && self.break_polling
+                        && !self.in_connect
+                        && deadline.is_none_or(|d| Instant::now() < d) =>
+                {
+                    continue;
+                }
+                Err(err) => return Err(err),
+            };
             if packet.has_reset_marker() {
                 reset_received = true;
-            } else if reset_received {
+            } else if reset_received
+                && packet.packet_type != constants::PACKET_TYPE_MARKER
+            {
+                self.finish_break();
                 return Ok(packet);
             }
         }
@@ -346,6 +468,7 @@ impl Client {
     /// is no longer deemed usable. The connection is closed and an error is
     /// returned.
     fn unrecoverable_error(&mut self) -> Error {
+        self.finish_break();
         let _ = self.transport.close();
         Error::unable_to_recover()
     }
@@ -668,7 +791,7 @@ impl Client {
         self.in_connect = false;
         self.connect_deadline = None;
         let db_info = result?;
-        self.transport.set_read_timeout(None)?;
+        self.transport.set_read_timeout(self.socket_timeout())?;
         Ok(db_info)
     }
 
@@ -780,6 +903,10 @@ impl Client {
     pub(crate) fn end_request(&mut self) -> Result<(), Error> {
         self.security_context = None;
         self.last_warning = None;
+        self.break_state.new_generation();
+        self.break_in_progress = false;
+        self.break_polling = false;
+        self.call_timeout = None;
         self.transport.set_read_timeout(None)?;
         if self.in_request {
             if self.pending_session_state != 0 {
@@ -852,7 +979,13 @@ impl Client {
     pub(crate) fn get_call_timeout(
         &self,
     ) -> Result<Option<std::time::Duration>, Error> {
-        self.transport.get_read_timeout()
+        // the socket may be armed with a shorter poll interval
+        self.transport.get_read_timeout().map(|_| self.call_timeout)
+    }
+
+    /// Returns the state shared with break handles.
+    pub(crate) fn break_state(&self) -> Arc<BreakState> {
+        Arc::clone(&self.break_state)
     }
 
     /// Returns the compile time capabilities.
@@ -927,6 +1060,10 @@ impl Client {
             transaction_in_progress: false,
             pool_id,
             temp_lobs_to_close: Vec::new(),
+            break_state: BreakState::new(),
+            break_in_progress: false,
+            break_polling: false,
+            call_timeout: None,
             in_connect: false,
             connect_deadline: None,
         }
@@ -992,10 +1129,15 @@ impl Client {
     /// Sets the call timeout to use on the connection or an error if the
     /// connection is not currently established.
     pub(crate) fn set_call_timeout(
-        &self,
+        &mut self,
         duration: Option<std::time::Duration>,
     ) -> Result<(), Error> {
-        self.transport.set_read_timeout(duration)
+        let previous = mem::replace(&mut self.call_timeout, duration);
+        let result = self.transport.set_read_timeout(self.socket_timeout());
+        if result.is_err() {
+            self.call_timeout = previous;
+        }
+        result
     }
 
     /// Sets the ids of the character sets in use by the database. The first

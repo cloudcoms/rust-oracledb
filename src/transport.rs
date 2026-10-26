@@ -479,6 +479,13 @@ impl Transport {
         self.full_packet_size = true;
     }
 
+    /// Installs an already connected stream without any negotiation.
+    #[cfg(test)]
+    pub(crate) fn connect_stream_for_test(&mut self, stream: TcpStream) {
+        stream.set_nodelay(true).unwrap();
+        self.low_level_transport = Some(LowLevelTransport::Tcp(stream));
+    }
+
     /// Returns whether this transport is currently wrapped in TLS.
     pub(crate) fn uses_tls(&self) -> bool {
         matches!(self.low_level_transport, Some(LowLevelTransport::Tls(_)))

@@ -34,6 +34,7 @@ use std::time::Duration;
 use std::time::Instant;
 
 use crate::bind_params::BindParameters;
+use crate::break_handle::{BreakHandle, BreakState};
 use crate::client::{Client, ClientRef};
 use crate::config::Config;
 use crate::cursor::Cursor;
@@ -54,6 +55,7 @@ use crate::statement::StatementBuilder;
 
 pub(crate) struct ConnImpl {
     client_ref: ClientRef,
+    break_state: std::sync::Arc<BreakState>,
     db_info: DbInfo,
     returned_to_pool: Instant,
 }
@@ -96,12 +98,20 @@ impl ConnImpl {
         config.validate()?;
         let mut client = Client::new(config, pool_id);
         let db_info = client.connect()?;
+        let break_state = client.break_state();
         let client_ref = std::sync::Arc::new(std::sync::Mutex::new(client));
         Ok(ConnImpl {
             client_ref,
+            break_state,
             db_info,
             returned_to_pool: Instant::now(),
         })
+    }
+
+    /// Returns a handle that can interrupt calls on this connection. This
+    /// does not take the client lock, so it never waits for a call.
+    pub(crate) fn break_handle(&self) -> BreakHandle {
+        self.break_state.handle()
     }
 
     /// Creates an empty temporary BLOB, CLOB, or NCLOB.

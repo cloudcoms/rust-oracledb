@@ -17,6 +17,16 @@ crates.io and is not supported by Oracle.
     `ErrorKind::ConnectTimeoutExceeded`. Previously only the TCP connect
     could be bounded and a listener that accepted but never answered blocked
     the caller indefinitely.
+1.  Added `Connection::break_handle()` and `BreakHandle::interrupt()`, which
+    interrupt a call in progress from another thread without taking the
+    connection lock
+    ([issue 24](https://github.com/oracle/rust-oracledb/issues/24)). The
+    waiting thread sends the in-band interrupt itself, so it works for TCP
+    and TLS. The call normally fails with ORA-01013 and the session stays
+    usable. An interrupt answered only after the call completed is consumed
+    before the next round trip. While a handle exists, reads wait in slices
+    of 100 ms; the call timeout keeps its meaning, and the recovery after a
+    call timeout waits for at most one more call timeout.
 
 ## rust-oracledb 26.0.0-beta.4 (September 23, 2026)
 

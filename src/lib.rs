@@ -35,6 +35,7 @@
 #[cfg(feature = "arrow")]
 mod arrow;
 mod bind_params;
+mod break_handle;
 mod client;
 mod column_index;
 mod config;
@@ -69,6 +70,7 @@ mod vector;
 mod write_buffer;
 
 // public structs
+pub use crate::break_handle::BreakHandle;
 pub use crate::config::Config;
 pub use crate::config::PoolConfig;
 pub use crate::connection::Connection;

@@ -34,6 +34,7 @@ pub(crate) use conn_impl::ConnImpl;
 pub(crate) use conn_impl::ConnImplStatus;
 
 use crate::bind_params::BindParameters;
+use crate::break_handle::BreakHandle;
 use crate::config::Config;
 use crate::cursor::Cursor;
 use crate::db_type::DbType;
@@ -99,6 +100,15 @@ impl Connection {
             conn_impl: Some(conn_impl),
             pool_contents_ref: Some(pool_contents_ref.clone()),
         }
+    }
+
+    /// Returns a [BreakHandle] that interrupts calls on this connection from
+    /// another thread. Creating the first handle makes the connection wait
+    /// for the database in slices of about 100 ms so that it can notice
+    /// interrupt requests; calls already in progress are not covered. See
+    /// [BreakHandle] for the exact semantics.
+    pub fn break_handle(&self) -> Result<BreakHandle, Error> {
+        Ok(self.get_impl()?.break_handle())
     }
 
     /// Returns the "call timeout" value currently in effect by the connection
