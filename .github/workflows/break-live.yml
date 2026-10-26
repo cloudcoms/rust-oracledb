@@ -1,0 +1,84 @@
+# cloudcoms fork only: proves the break/connect-timeout patches against a real
+# database. Hosted runner + throwaway Oracle Free container; nothing persists.
+name: Break handle live test
+
+on:
+  push:
+    branches: ['dbwork/**']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: break-live-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  # Oracle Database 23.26 (26ai) Free, pinned by digest.
+  ORACLE_IMAGE: gvenzl/oracle-free:23.26.3-slim-faststart@sha256:f5ff19033860d662c821cb04eb10483fa94f14f78eae252d054291ea07028093
+  CARGO_TERM_COLOR: always
+  RSO_TEST_CONNECT_STRING: localhost:1521/FREEPDB1
+  RSO_TEST_MAIN_USER: rsotest
+  RSO_TEST_ADMIN_USER: system
+
+jobs:
+  live:
+    name: Unit + live Oracle tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Start throwaway Oracle Free
+        run: |
+          set -euo pipefail
+          # random per run; the container is destroyed at the end of the job
+          pw="R$(openssl rand -hex 12)"
+          echo "::add-mask::$pw"
+          {
+            echo "RSO_TEST_ADMIN_PASSWORD=$pw"
+            echo "RSO_TEST_MAIN_PASSWORD=$pw"
+          } >> "$GITHUB_ENV"
+          docker run -d --name oracle -p 127.0.0.1:1521:1521 \
+            -e ORACLE_PASSWORD="$pw" "$ORACLE_IMAGE"
+
+      - name: Rust toolchain
+        run: |
+          set -euo pipefail
+          rustup toolchain install stable --profile minimal -c rustfmt,clippy
+          rustup default stable
+          rustc --version
+
+      - name: Format, lint, unit tests (no database)
+        run: |
+          set -euo pipefail
+          cargo fmt --all -- --check
+          cargo clippy --all-targets -- -D warnings
+          cargo test --lib
+
+      - name: Wait for the database
+        run: |
+          set -euo pipefail
+          for i in $(seq 1 120); do
+            status=$(docker inspect --format '{{.State.Health.Status}}' oracle)
+            if [ "$status" = healthy ]; then echo "healthy after ${i}x5s"; exit 0; fi
+            sleep 5
+          done
+          docker logs --tail 50 oracle
+          exit 1
+
+      - name: Create the test schema (upstream helper)
+        run: cargo run --bin create_test_schema
+
+      - name: Break handle tests (live)
+        run: cargo test --test test_3600_break -- --nocapture --test-threads=1
+
+      - name: Upstream suite (regression, live)
+        run: cargo test --tests -- --test-threads=1
+
+      - name: Remove the database
+        if: always()
+        run: docker rm -f oracle >/dev/null 2>&1 || true
