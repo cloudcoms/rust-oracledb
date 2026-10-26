@@ -142,13 +142,6 @@ pub const _MARKER_TYPE_BREAK: u8 = 1;
 pub const MARKER_TYPE_RESET: u8 = 2;
 pub const MARKER_TYPE_INTERRUPT: u8 = 3;
 
-// global service options, connect/accept flags and control types used to
-// negotiate out-of-band breaks
-pub const GSO_CAN_RECV_ATTENTION: u16 = 0x0400;
-pub const CONNECT_FLAGS_CHECK_OOB: u32 = 0x00000001;
-pub const ACCEPT_FLAG_CHECK_OOB: u32 = 0x00000001;
-pub const CONTROL_TYPE_RESET_OOB: u16 = 9;
-
 // protocol version constants
 pub const PROTOCOL_VERSION_MIN: u16 = 300;
 pub const PROTOCOL_VERSION_12: u16 = 315;

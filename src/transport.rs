@@ -486,26 +486,6 @@ impl Transport {
         self.low_level_transport = Some(LowLevelTransport::Tcp(stream));
     }
 
-    /// Sends an out-of-band break: one byte of TCP urgent data. On Unix the
-    /// database server process is signalled (SIGURG) even while it is busy
-    /// executing, unlike an in-band marker, which it only reads once it next
-    /// reads from the network. Only possible on plain TCP.
-    pub(crate) fn send_oob_break(&self) -> Result<(), Error> {
-        if self.print_packets {
-            println!("{}\n", self.get_op_header("Sending out of band break"));
-        }
-        match self.low_level_transport.as_ref() {
-            Some(LowLevelTransport::Tcp(stream)) => {
-                socket2::SockRef::from(stream).send_out_of_band(b"!")?;
-                Ok(())
-            }
-            Some(LowLevelTransport::Tls(_)) => Err(Error::not_implemented(
-                "out-of-band breaks over TLS".to_string(),
-            )),
-            None => Err(Error::not_connected()),
-        }
-    }
-
     /// Returns whether this transport is currently wrapped in TLS.
     pub(crate) fn uses_tls(&self) -> bool {
         matches!(self.low_level_transport, Some(LowLevelTransport::Tls(_)))

@@ -55,8 +55,7 @@ jobs:
             echo "RSO_TEST_ADMIN_PASSWORD=$pw"
             echo "RSO_TEST_MAIN_PASSWORD=$pw"
           } >> "$GITHUB_ENV"
-          # No published port: docker-proxy would drop TCP urgent data, so the
-          # tests connect to the container address (out-of-band breaks).
+          # No published port: the tests connect to the container address.
           docker run -d --name oracle -e ORACLE_PASSWORD="$pw" "$ORACLE_IMAGE"
           ip=$(docker inspect -f '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' oracle)
           echo "RSO_TEST_CONNECT_STRING=${ip}:1521/${ORACLE_SERVICE}" >> "$GITHUB_ENV"
@@ -106,25 +105,9 @@ jobs:
           exit
           SQL
 
-      # Evidence of which break path ran: urgent segments sent to the
-      # database mean out-of-band breaks were negotiated, none mean in-band.
-      - name: Capture urgent TCP segments
-        run: |
-          sudo nohup tcpdump -i docker0 -nn -U -w /tmp/urg.pcap \
-            'tcp dst port 1521 and tcp[tcpflags] & tcp-urg != 0' \
-            > /tmp/tcpdump.log 2>&1 &
-          sleep 2
-
       - name: Break handle tests (live)
         timeout-minutes: 10
         run: cargo test --test test_3600_break -- --nocapture --test-threads=1
-
-      - name: Urgent TCP segments sent to the database
-        if: always()
-        run: |
-          sudo pkill -INT tcpdump || true
-          sleep 1
-          echo "urgent segments: $(sudo tcpdump -nn -r /tmp/urg.pcap 2>/dev/null | wc -l)"
 
       - name: Upstream suite (regression, live)
         if: matrix.db.upstream_suite

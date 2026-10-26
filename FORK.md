@@ -19,12 +19,14 @@ On top of an upstream release tag, as small commits that each stand alone:
    (`tests/test_3600_break.rs`, and the upstream suite on 23.26) against
    throwaway Oracle Database 23.26 Free and 21c XE containers on a
    GitHub-hosted runner.
-6. Out-of-band breaks (TCP urgent data) when the server offers them, on
-   non-Windows clients over plain TCP, as python-oracledb thin does;
-   otherwise the in-band interrupt marker.
-7. A fix for the reset after an interrupt: the database answers an in-band
+6. A fix for the reset after an interrupt: the database answers an in-band
    interrupt with a reset marker straight away, and that marker must count,
    or the reset discards the response (ORA-01013) and waits in vain.
+
+Breaks are always sent in band, as the upstream driver and python-oracledb
+on Windows do. python-oracledb thin on other platforms sends them out of
+band (TCP urgent data) when the server offers it; neither tested database
+(23.26 Free, 21c XE) offered it, so that path is not carried here.
 
 Design discussion: oracle/rust-oracledb#24.
 

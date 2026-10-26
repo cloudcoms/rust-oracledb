@@ -52,14 +52,6 @@ impl Peer {
         assert_eq!(body, [1, 0, marker_type]);
     }
 
-    /// Reads one byte and asserts that it is the urgent byte of an
-    /// out-of-band break (delivered inline, see connect()).
-    fn expect_urgent_byte(&mut self) {
-        let mut byte = [0u8; 1];
-        self.sock.read_exact(&mut byte).unwrap();
-        assert_eq!(&byte, b"!");
-    }
-
     /// Reads one packet and asserts that it is a data packet (a request).
     fn expect_request(&mut self) {
         let (packet_type, _) = self.read_packet();
@@ -113,14 +105,8 @@ where
 {
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let addr = listener.local_addr().unwrap();
-    let (ready_send, ready_recv) = mpsc::channel::<()>();
     let peer = thread::spawn(move || {
         let (sock, _) = listener.accept().unwrap();
-        // receive urgent data in the stream, where the scripts can see it
-        socket2::SockRef::from(&sock)
-            .set_out_of_band_inline(true)
-            .unwrap();
-        ready_send.send(()).unwrap();
         script(&mut Peer { sock });
     });
     // a connect string gives the default SDU; nothing connects to it
@@ -136,9 +122,6 @@ where
     client
         .set_call_timeout(Some(Duration::from_secs(5)))
         .unwrap();
-    // send nothing before the peer is set up: Windows fails to accept a
-    // connection (WSAEINVAL) once urgent data has arrived on it
-    ready_recv.recv().unwrap();
     (client, peer)
 }
 
@@ -215,49 +198,6 @@ fn interrupt_answered_with_a_break_marker_also_resets() {
     });
     ping(&mut client).unwrap();
     requested.join().unwrap();
-    assert!(!client.break_in_progress);
-    ping(&mut client).unwrap();
-    peer.join().unwrap();
-}
-
-#[test]
-fn interrupt_with_oob_sends_urgent_data_instead_of_a_marker() {
-    let (mut client, peer) = connect(|peer| {
-        peer.expect_request();
-        peer.expect_urgent_byte();
-        peer.answer_with_break_marker();
-        peer.expect_request();
-        peer.send_status();
-    });
-    client.caps.enable_oob_for_test();
-    let handle = client.break_state().handle();
-    let requested = thread::spawn(move || {
-        thread::sleep(Duration::from_millis(150));
-        handle.interrupt();
-    });
-    ping(&mut client).unwrap();
-    requested.join().unwrap();
-    assert!(!client.break_in_progress);
-    ping(&mut client).unwrap();
-    peer.join().unwrap();
-}
-
-#[test]
-fn late_oob_interrupt_is_followed_by_an_inband_marker() {
-    let (mut client, peer) = connect(|peer| {
-        peer.expect_request();
-        peer.expect_urgent_byte();
-        // the call completes before the database acts on the urgent data;
-        // the client then sends an in-band interrupt, which is answered
-        peer.send_status();
-        peer.expect_marker(constants::MARKER_TYPE_INTERRUPT);
-        peer.answer_with_reset_marker();
-        peer.expect_request();
-        peer.send_status();
-    });
-    client.caps.enable_oob_for_test();
-    client.break_state().handle().interrupt();
-    ping(&mut client).unwrap();
     assert!(!client.break_in_progress);
     ping(&mut client).unwrap();
     peer.join().unwrap();
