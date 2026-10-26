@@ -62,9 +62,11 @@ jobs:
       - name: Wait for the database
         run: |
           set -euo pipefail
+          # the image has no HEALTHCHECK; its entrypoint prints this when open
           for i in $(seq 1 120); do
-            status=$(docker inspect --format '{{.State.Health.Status}}' oracle)
-            if [ "$status" = healthy ]; then echo "healthy after ${i}x5s"; exit 0; fi
+            if docker logs oracle 2>&1 | grep -q 'DATABASE IS READY TO USE'; then
+              echo "ready after ~$((i * 5))s"; exit 0
+            fi
             sleep 5
           done
           docker logs --tail 50 oracle
