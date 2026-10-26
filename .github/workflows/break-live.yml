@@ -18,7 +18,6 @@ env:
   # Oracle Database 23.26 (26ai) Free, pinned by digest.
   ORACLE_IMAGE: gvenzl/oracle-free:23.26.3-slim-faststart@sha256:f5ff19033860d662c821cb04eb10483fa94f14f78eae252d054291ea07028093
   CARGO_TERM_COLOR: always
-  RSO_TEST_CONNECT_STRING: localhost:1521/FREEPDB1
   RSO_TEST_MAIN_USER: rsotest
   RSO_TEST_ADMIN_USER: system
 
@@ -42,8 +41,11 @@ jobs:
             echo "RSO_TEST_ADMIN_PASSWORD=$pw"
             echo "RSO_TEST_MAIN_PASSWORD=$pw"
           } >> "$GITHUB_ENV"
-          docker run -d --name oracle -p 127.0.0.1:1521:1521 \
-            -e ORACLE_PASSWORD="$pw" "$ORACLE_IMAGE"
+          # No published port: docker-proxy would drop TCP urgent data, so the
+          # tests connect to the container address (out-of-band breaks).
+          docker run -d --name oracle -e ORACLE_PASSWORD="$pw" "$ORACLE_IMAGE"
+          ip=$(docker inspect -f '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' oracle)
+          echo "RSO_TEST_CONNECT_STRING=${ip}:1521/FREEPDB1" >> "$GITHUB_ENV"
 
       - name: Rust toolchain
         run: |
@@ -89,9 +91,11 @@ jobs:
           SQL
 
       - name: Break handle tests (live)
+        timeout-minutes: 10
         run: cargo test --test test_3600_break -- --nocapture --test-threads=1
 
       - name: Upstream suite (regression, live)
+        timeout-minutes: 20
         run: cargo test --tests -- --test-threads=1
 
       - name: Remove the database

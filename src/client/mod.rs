@@ -156,6 +156,15 @@ impl Client {
     /// Reads the answer of the database to an interrupt sent during a call
     /// that completed before the database acted on it.
     fn receive_interrupt_ack(&mut self) -> Result<(), Error> {
+        // Urgent data alone may go unanswered once the call has ended; an
+        // in-band interrupt always is (python-oracledb does the same).
+        if self.caps.supports_oob()
+            && let Err(err) =
+                self.send_marker(constants::MARKER_TYPE_INTERRUPT)
+        {
+            self.finish_break();
+            return Err(err);
+        }
         let mut response = Response::new();
         let result =
             self.receive_response(&mut InterruptAckMessage, &mut response);
@@ -232,11 +241,22 @@ impl Client {
         self.break_state.clear();
     }
 
-    /// Sends an in-band interrupt for the call in progress.
+    /// Sends a break for the call in progress: TCP urgent data when that was
+    /// negotiated, otherwise an in-band interrupt marker.
     fn send_break(&mut self) -> Result<(), Error> {
         self.break_in_progress = true;
         self.break_state.clear();
-        self.send_marker(constants::MARKER_TYPE_INTERRUPT)
+        if self.caps.supports_oob() {
+            self.transport.send_oob_break()
+        } else {
+            self.send_marker(constants::MARKER_TYPE_INTERRUPT)
+        }
+    }
+
+    /// Returns whether out-of-band breaks can be offered to the server: plain
+    /// TCP only, and not on Windows clients (as in python-oracledb).
+    pub(crate) fn oob_possible(&self) -> bool {
+        cfg!(not(windows)) && !self.transport.uses_tls()
     }
 
     /// Returns the read timeout to use on the socket outside of connect.
@@ -268,7 +288,10 @@ impl Client {
         let mut resp = Response::new();
         resp.add_packets(vec![packet]);
         let control_type = resp.read_u16be()?;
-        if control_type == constants::TTC_CONTROL_TYPE_INBAND_NOTIF {
+        if control_type == constants::CONTROL_TYPE_RESET_OOB {
+            // the server did not receive the out-of-band check
+            self.caps.disable_oob();
+        } else if control_type == constants::TTC_CONTROL_TYPE_INBAND_NOTIF {
             resp.advance(4)?;
             self.pending_error_num = resp.read_u32be()? as usize;
         }
@@ -862,9 +885,12 @@ impl Client {
                 self.transport.negotiate_tls(address.host(), &self.config)?;
             }
         }
+        let oob_requested = self.oob_possible();
         self.caps.adjust_for_protocol(
             connect_message.protocol_version,
+            connect_message.protocol_options,
             connect_message.protocol_flags,
+            oob_requested,
         );
         self.transport.set_full_packet_size();
         Ok(())
@@ -873,6 +899,14 @@ impl Client {
     /// Performs the second phase of connecting to the database. Any errors
     /// that take place during this phase are returned directly to the caller.
     pub(crate) fn connect_phase_two(&mut self) -> Result<DbInfo, Error> {
+        // if out-of-band breaks were agreed, send urgent data followed by a
+        // reset marker so the server can check that it receives them; if it
+        // does not, it answers with a control packet that disables them
+        if self.caps.supports_oob_check() {
+            self.transport.send_oob_break()?;
+            self.send_marker(constants::MARKER_TYPE_RESET)?;
+        }
+
         // if fast authentication is possible, use it
         if self.caps.supports_fast_auth() {
             let mut fast_auth_message = FastAuthMessage::new();

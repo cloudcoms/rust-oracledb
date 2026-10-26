@@ -76,6 +76,9 @@ fn test_3600_interrupt_running_query(conn: oracledb::Connection) {
     let tag = format!("rso-break-{}", std::process::id());
     conn.set_client_identifier(&tag).unwrap();
     let handle = conn.break_handle().unwrap();
+    // bounds the test if the interrupt does not reach the server
+    conn.set_call_timeout(Some(Duration::from_secs(30)))
+        .unwrap();
     interrupt_after(handle, Duration::from_secs(1));
     let started = Instant::now();
     let err = expect_err(conn.query_row(LONG_QUERY, &[]));

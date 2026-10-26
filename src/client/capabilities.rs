@@ -131,11 +131,26 @@ pub struct Capabilities {
     supports_request_boundaries: bool,
     supports_end_user_security_context: bool,
     supports_ha_readiness: bool,
+    supports_oob: bool,
+    supports_oob_check: bool,
 }
 
 impl Capabilities {
-    pub fn adjust_for_protocol(&mut self, protocol_version: u16, flags: u32) {
+    /// Adjusts the capabilities for the accept packet. Out-of-band breaks are
+    /// used only if the client asked for them and the server agreed.
+    pub fn adjust_for_protocol(
+        &mut self,
+        protocol_version: u16,
+        protocol_options: u16,
+        flags: u32,
+        oob_requested: bool,
+    ) {
         self.protocol_version = protocol_version;
+        self.supports_oob = oob_requested
+            && protocol_options & constants::GSO_CAN_RECV_ATTENTION != 0;
+        self.supports_oob_check = self.supports_oob
+            && protocol_version >= constants::PROTOCOL_VERSION_18
+            && flags & constants::ACCEPT_FLAG_CHECK_OOB != 0;
         if flags & ACCEPT_FLAG_FAST_AUTH != 0 {
             self.supports_fast_auth = true;
         }
@@ -262,6 +277,8 @@ impl Capabilities {
             supports_request_boundaries: false,
             supports_end_user_security_context: false,
             supports_ha_readiness: false,
+            supports_oob: false,
+            supports_oob_check: false,
         };
         caps.init_compile_caps();
         caps.init_runtime_caps();
@@ -290,6 +307,23 @@ impl Capabilities {
 
     pub fn supports_fast_auth(&self) -> bool {
         self.supports_fast_auth
+    }
+
+    /// Returns whether breaks are sent as TCP urgent data.
+    pub fn supports_oob(&self) -> bool {
+        self.supports_oob
+    }
+
+    /// Returns whether the server asked the client to check out-of-band
+    /// breaks right after the connection was accepted.
+    pub fn supports_oob_check(&self) -> bool {
+        self.supports_oob_check
+    }
+
+    /// Stops using out-of-band breaks (the server could not receive them).
+    pub fn disable_oob(&mut self) {
+        self.supports_oob = false;
+        self.supports_oob_check = false;
     }
 
     /// Returns whether the server supports the HA readiness integration.

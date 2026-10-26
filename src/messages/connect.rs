@@ -58,6 +58,7 @@ pub struct ConnectMessage<'a> {
     pub packet_flags: u8,
     pub sdu: u32,
     pub protocol_version: u16,
+    pub protocol_options: u16,
     pub protocol_flags: u32,
     pub accepted: bool,
     pub tls_renegotiation_needed: bool,
@@ -78,6 +79,7 @@ impl ConnectMessage<'_> {
             packet_flags: 0,
             sdu: description.sdu(),
             protocol_version: 0,
+            protocol_options: 0,
             protocol_flags: 0,
             accepted: false,
             tls_renegotiation_needed: false,
@@ -94,7 +96,8 @@ impl ConnectMessage<'_> {
         if self.protocol_version < constants::PROTOCOL_VERSION_12 {
             return Err(Error::server_version_not_supported());
         }
-        resp.advance(12)?;
+        self.protocol_options = resp.read_u16be()?;
+        resp.advance(10)?;
         let flags1: u8 = resp.read_u8()?;
         if flags1 & NSI_NA_REQUIRED != 0 {
             todo!();
@@ -208,6 +211,14 @@ impl Message for ConnectMessage<'_> {
 
     /// Serializes the message.
     fn serialize(&self, client: &Client, buf: &mut WriteBuffer) {
+        let (service_options, connect_flags_2) = if client.oob_possible() {
+            (
+                GSO_DONT_CARE | constants::GSO_CAN_RECV_ATTENTION,
+                constants::CONNECT_FLAGS_CHECK_OOB,
+            )
+        } else {
+            (GSO_DONT_CARE, 0)
+        };
         let short_sdu: u16 = {
             if self.sdu > u16::MAX as u32 {
                 u16::MAX
@@ -218,7 +229,7 @@ impl Message for ConnectMessage<'_> {
         let nsi_flags = NSI_SUPPORT_SECURITY_RENEG | NSI_DISABLE_NA;
         buf.write_u16be(constants::PROTOCOL_VERSION_23);
         buf.write_u16be(constants::PROTOCOL_VERSION_MIN);
-        buf.write_u16be(GSO_DONT_CARE);
+        buf.write_u16be(service_options);
         buf.write_u16be(short_sdu);
         buf.write_u16be(short_sdu);
         buf.write_u16be(PROTOCOL_CHARACTERISTICS);
@@ -235,7 +246,7 @@ impl Message for ConnectMessage<'_> {
         buf.write_u32be(self.sdu);
         buf.write_u32be(self.sdu);
         buf.write_u32be(0); // connect flags 1
-        buf.write_u32be(0); // connect flags 1
+        buf.write_u32be(connect_flags_2);
         if !self.extended_data_needed() {
             self.serialize_extended_data(client, buf);
         }
