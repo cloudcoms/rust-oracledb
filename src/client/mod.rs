@@ -325,7 +325,7 @@ impl Client {
                     }
                     constants::PACKET_TYPE_MARKER => {
                         let packet = self
-                            .reset()
+                            .reset(Some(&packet))
                             .map_err(|_| self.unrecoverable_error())?;
                         return Ok((packet, false));
                     }
@@ -411,7 +411,7 @@ impl Client {
             self.send_break()
         };
         interrupt
-            .and_then(|_| self.reset())
+            .and_then(|_| self.reset(None))
             .map_err(|_| self.unrecoverable_error())
             .and_then(|_| Err(err))
     }
@@ -422,14 +422,21 @@ impl Client {
     /// caller. Note that some databases return multiple reset markers so
     /// these are also accommodated.
     ///
+    /// `marker` is the marker packet that was received before the reset was
+    /// started, if any. The database answers an in-band interrupt with a
+    /// reset marker straight away (and the response once the client's reset
+    /// marker arrives), so that marker already counts; reading on for another
+    /// one would discard the response and wait in vain. python-oracledb
+    /// checks the current packet the same way.
+    ///
     /// While waiting in short slices for a break handle, the wait is bounded
     /// by one call timeout (if one is set), like a single read without a
     /// break handle. Any further marker packets that follow the reset marker
     /// are skipped, as python-oracledb does.
-    fn reset(&mut self) -> Result<Packet, Error> {
+    fn reset(&mut self, marker: Option<&Packet>) -> Result<Packet, Error> {
         self.send_marker(constants::MARKER_TYPE_RESET)?;
         let deadline = self.call_timeout.map(|t| Instant::now() + t);
-        let mut reset_received = false;
+        let mut reset_received = marker.is_some_and(Packet::has_reset_marker);
         loop {
             let packet = match self.transport.receive_packet() {
                 Ok(packet) => packet,

@@ -14,10 +14,17 @@ On top of an upstream release tag, as small commits that each stand alone:
    authentication (`ErrorKind::ConnectTimeoutExceeded`).
 4. `Connection::break_handle()`: interrupts a call from another thread. The
    handle only records the request; the thread waiting for the database sends
-   the in-band interrupt itself (TCP and TLS alike), see `src/break_handle.rs`.
+   the interrupt itself (TCP and TLS alike), see `src/break_handle.rs`.
 5. `.github/workflows/break-live.yml`: unit tests plus the live tests
-   (`tests/test_3600_break.rs` and the upstream suite) against a throwaway
-   Oracle Free container on a GitHub-hosted runner.
+   (`tests/test_3600_break.rs`, and the upstream suite on 23.26) against
+   throwaway Oracle Database 23.26 Free and 21c XE containers on a
+   GitHub-hosted runner.
+6. Out-of-band breaks (TCP urgent data) when the server offers them, on
+   non-Windows clients over plain TCP, as python-oracledb thin does;
+   otherwise the in-band interrupt marker.
+7. A fix for the reset after an interrupt: the database answers an in-band
+   interrupt with a reset marker straight away, and that marker must count,
+   or the reset discards the response (ORA-01013) and waits in vain.
 
 Design discussion: oracle/rust-oracledb#24.
 

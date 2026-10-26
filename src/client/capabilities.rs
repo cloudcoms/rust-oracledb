@@ -326,6 +326,12 @@ impl Capabilities {
         self.supports_oob_check = false;
     }
 
+    /// Uses out-of-band breaks as if the server had agreed to them.
+    #[cfg(test)]
+    pub fn enable_oob_for_test(&mut self) {
+        self.supports_oob = true;
+    }
+
     /// Returns whether the server supports the HA readiness integration.
     pub fn supports_ha_readiness(&self) -> bool {
         self.supports_ha_readiness

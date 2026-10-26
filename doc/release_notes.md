@@ -27,6 +27,16 @@ crates.io and is not supported by Oracle.
     before the next round trip. While a handle exists, reads wait in slices
     of 100 ms; the call timeout keeps its meaning, and the recovery after a
     call timeout waits for at most one more call timeout.
+1.  Breaks are sent out of band (TCP urgent data) when the database offers
+    it during connect, on non-Windows clients over plain TCP, as in
+    python-oracledb thin; otherwise as an in-band interrupt marker. When the
+    database asks for it at connect, the client sends a test break, and a
+    database that did not receive it answers with a control packet that
+    turns out-of-band breaks off for the connection.
+1.  Fixed the reset after an interrupt discarding the response of the
+    database when the database answered the interrupt with a reset marker
+    (as Oracle Database 23 does for an in-band interrupt), which left the
+    caller waiting until the call timeout and then closed the connection.
 
 ## rust-oracledb 26.0.0-beta.4 (September 23, 2026)
 

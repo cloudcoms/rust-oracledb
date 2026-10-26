@@ -94,6 +94,9 @@ fn test_3600_interrupt_running_query(conn: oracledb::Connection) {
 #[rstest]
 fn test_3601_interrupt_before_quick_call(conn: oracledb::Connection) {
     let handle = conn.break_handle().unwrap();
+    // bounds the test if an answer to the interrupt is mishandled
+    conn.set_call_timeout(Some(Duration::from_secs(10)))
+        .unwrap();
     for _ in 0..5 {
         handle.interrupt();
         // the call may complete before the server acts on the interrupt;
@@ -128,8 +131,10 @@ fn test_3602_call_timeout_with_break_handle(conn: oracledb::Connection) {
 fn test_3603_interrupt_ignored_by_sleep_is_bounded(
     conn: oracledb::Connection,
 ) {
-    // DBMS_SESSION.SLEEP() acknowledges an interrupt only when it ends; with
-    // a call timeout the client gives up after one more call timeout.
+    // Whether DBMS_SESSION.SLEEP() acts on an interrupt right away depends
+    // on the database; either it does (ORA-01013) or, with a call timeout,
+    // the client gives up after one more call timeout and closes the
+    // connection. The output records which one happened.
     let handle = conn.break_handle().unwrap();
     conn.set_call_timeout(Some(Duration::from_secs(2))).unwrap();
     interrupt_after(handle, Duration::from_millis(500));
@@ -138,8 +143,13 @@ fn test_3603_interrupt_ignored_by_sleep_is_bounded(
     let elapsed = started.elapsed();
     let err = expect_err(result);
     println!("sleep with interrupt ended after {elapsed:?}: {err}");
-    assert_eq!(err.kind(), &oracledb::ErrorKind::UnableToRecover);
-    assert!(elapsed < Duration::from_secs(6), "took {elapsed:?}");
+    if db_error_code(&err) == Some(1013) {
+        assert!(elapsed < Duration::from_secs(2), "took {elapsed:?}");
+        assert_usable(&conn);
+    } else {
+        assert_eq!(err.kind(), &oracledb::ErrorKind::UnableToRecover);
+        assert!(elapsed < Duration::from_secs(6), "took {elapsed:?}");
+    }
 }
 
 #[rstest]

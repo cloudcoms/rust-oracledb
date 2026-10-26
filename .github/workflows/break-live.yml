@@ -1,5 +1,5 @@
-# cloudcoms fork only: proves the break/connect-timeout patches against a real
-# database. Hosted runner + throwaway Oracle Free container; nothing persists.
+# cloudcoms fork only: proves the break/connect-timeout patches against real
+# databases. Hosted runner + throwaway Oracle containers; nothing persists.
 name: Break handle live test
 
 on:
@@ -15,23 +15,37 @@ concurrency:
   cancel-in-progress: false
 
 env:
-  # Oracle Database 23.26 (26ai) Free, pinned by digest.
-  ORACLE_IMAGE: gvenzl/oracle-free:23.26.3-slim-faststart@sha256:f5ff19033860d662c821cb04eb10483fa94f14f78eae252d054291ea07028093
   CARGO_TERM_COLOR: always
   RSO_TEST_MAIN_USER: rsotest
   RSO_TEST_ADMIN_USER: system
 
 jobs:
   live:
-    name: Unit + live Oracle tests
+    name: Live Oracle tests (${{ matrix.db.name }})
     runs-on: ubuntu-latest
     timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        db:
+          # images pinned by digest
+          - name: 23.26 Free
+            image: gvenzl/oracle-free:23.26.3-slim-faststart@sha256:f5ff19033860d662c821cb04eb10483fa94f14f78eae252d054291ea07028093
+            service: FREEPDB1
+            upstream_suite: true
+          - name: 21c XE
+            image: gvenzl/oracle-xe:21.3.0-slim-faststart@sha256:f82bccdf6020d27373fdf0e93046b63eb3f777a0289e329d9839feebaf4555de
+            service: XEPDB1
+            upstream_suite: false
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
 
-      - name: Start throwaway Oracle Free
+      - name: Start a throwaway database
+        env:
+          ORACLE_IMAGE: ${{ matrix.db.image }}
+          ORACLE_SERVICE: ${{ matrix.db.service }}
         run: |
           set -euo pipefail
           # random per run; the container is destroyed at the end of the job
@@ -45,7 +59,7 @@ jobs:
           # tests connect to the container address (out-of-band breaks).
           docker run -d --name oracle -e ORACLE_PASSWORD="$pw" "$ORACLE_IMAGE"
           ip=$(docker inspect -f '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' oracle)
-          echo "RSO_TEST_CONNECT_STRING=${ip}:1521/FREEPDB1" >> "$GITHUB_ENV"
+          echo "RSO_TEST_CONNECT_STRING=${ip}:1521/${ORACLE_SERVICE}" >> "$GITHUB_ENV"
 
       - name: Rust toolchain
         run: |
@@ -64,7 +78,7 @@ jobs:
       - name: Wait for the database
         run: |
           set -euo pipefail
-          # the image has no HEALTHCHECK; its entrypoint prints this when open
+          # the images have no HEALTHCHECK; the entrypoint prints this when open
           for i in $(seq 1 120); do
             if docker logs oracle 2>&1 | grep -q 'DATABASE IS READY TO USE'; then
               echo "ready after ~$((i * 5))s"; exit 0
@@ -75,14 +89,16 @@ jobs:
           exit 1
 
       # Same grants as src/bin/create_test_schema.rs minus CTXAPP: the slim
-      # image has no Oracle Text and no upstream test uses it. Credentials go
-      # through stdin, never the command line.
+      # images have no Oracle Text and no upstream test uses it. Credentials
+      # go through stdin, never the command line.
       - name: Create the test schema
+        env:
+          ORACLE_SERVICE: ${{ matrix.db.service }}
         run: |
           set -euo pipefail
           docker exec -i oracle sqlplus -s /nolog <<SQL
           whenever sqlerror exit failure
-          connect ${RSO_TEST_ADMIN_USER}/"${RSO_TEST_ADMIN_PASSWORD}"@FREEPDB1
+          connect ${RSO_TEST_ADMIN_USER}/"${RSO_TEST_ADMIN_PASSWORD}"@${ORACLE_SERVICE}
           create user ${RSO_TEST_MAIN_USER} identified by "${RSO_TEST_MAIN_PASSWORD}";
           grant create session, create table, create procedure, create type,
             create view, select any dictionary, change notification,
@@ -90,11 +106,28 @@ jobs:
           exit
           SQL
 
+      # Evidence of which break path ran: urgent segments sent to the
+      # database mean out-of-band breaks were negotiated, none mean in-band.
+      - name: Capture urgent TCP segments
+        run: |
+          sudo nohup tcpdump -i docker0 -nn -U -w /tmp/urg.pcap \
+            'tcp dst port 1521 and tcp[tcpflags] & tcp-urg != 0' \
+            > /tmp/tcpdump.log 2>&1 &
+          sleep 2
+
       - name: Break handle tests (live)
         timeout-minutes: 10
         run: cargo test --test test_3600_break -- --nocapture --test-threads=1
 
+      - name: Urgent TCP segments sent to the database
+        if: always()
+        run: |
+          sudo pkill -INT tcpdump || true
+          sleep 1
+          echo "urgent segments: $(sudo tcpdump -nn -r /tmp/urg.pcap 2>/dev/null | wc -l)"
+
       - name: Upstream suite (regression, live)
+        if: matrix.db.upstream_suite
         timeout-minutes: 20
         run: cargo test --tests -- --test-threads=1
 
