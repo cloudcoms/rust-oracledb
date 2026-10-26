@@ -44,6 +44,7 @@ pub enum ErrorKind {
     ArrowOperation,
     CallTimeoutExceeded,
     ColumnTruncated(usize, usize),
+    ConnectTimeoutExceeded,
     DbError(DbError),
     DeadConnection,
     DifferentTypes(&'static DbType, &'static DbType),
@@ -194,6 +195,9 @@ impl fmt::Display for Error {
             ErrorKind::CallTimeoutExceeded => {
                 fmt.write_str("the configured call timeout was exceeded")?
             }
+            ErrorKind::ConnectTimeoutExceeded => fmt.write_str(
+                "the configured connect timeout was exceeded",
+            )?,
             ErrorKind::ColumnTruncated(col_value_size, actual_size) => write!(
                 fmt,
                 "column truncated to {col_value_size} bytes. \
@@ -464,6 +468,10 @@ impl Error {
             ErrorKind::ColumnTruncated(col_value_size, actual_size),
             None,
         )
+    }
+
+    pub(crate) fn connect_timeout_exceeded() -> Error {
+        Error::new(ErrorKind::ConnectTimeoutExceeded, None)
     }
 
     pub(crate) fn db_error(db_error: DbError) -> Error {

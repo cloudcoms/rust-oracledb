@@ -30,10 +30,14 @@
 //-----------------------------------------------------------------------------
 
 mod capabilities;
+#[cfg(test)]
+mod tests;
 
 use std::mem;
 use std::net::SocketAddr;
 use std::net::TcpStream;
+use std::net::ToSocketAddrs;
+use std::time::Instant;
 
 use crate::bind_params::BindParameters;
 use crate::config::Address;
@@ -95,6 +99,8 @@ pub struct Client {
     last_warning: Option<String>,
     security_context: Option<EndUserSecurityContext>,
     temp_lobs_to_close: Vec<Vec<u8>>,
+    in_connect: bool,
+    connect_deadline: Option<Instant>,
 }
 
 pub(crate) type ClientRef = std::sync::Arc<std::sync::Mutex<Client>>;
@@ -115,6 +121,62 @@ impl Client {
         } else {
             Ok(response)
         }
+    }
+
+    /// Arms the remaining connect time as the read timeout while a connect
+    /// deadline is in effect.
+    fn arm_connect_deadline(&self) -> Result<(), Error> {
+        if let Some(deadline) = self.connect_deadline {
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            if remaining.is_zero() {
+                return Err(Error::connect_timeout_exceeded());
+            }
+            self.transport.set_read_timeout(Some(remaining))?;
+        }
+        Ok(())
+    }
+
+    /// Opens a TCP connection to the given address, honouring the transport
+    /// connect timeout and the overall connect deadline.
+    fn dial(&self, sock_addr: SocketAddr) -> Result<TcpStream, Error> {
+        let mut timeout = self.config.transport_connect_timeout();
+        if let Some(deadline) = self.connect_deadline {
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            if remaining.is_zero() {
+                return Err(Error::connect_timeout_exceeded());
+            }
+            timeout = Some(timeout.map_or(remaining, |t| t.min(remaining)));
+        }
+        let result = match timeout {
+            Some(timeout) => TcpStream::connect_timeout(&sock_addr, timeout),
+            None => TcpStream::connect(sock_addr),
+        };
+        result.map_err(|e| {
+            if e.kind() == std::io::ErrorKind::TimedOut {
+                Error::connect_timeout_exceeded()
+            } else {
+                e.into()
+            }
+        })
+    }
+
+    /// Resolves the host and opens a TCP connection to the first address that
+    /// accepts it, like TcpStream::connect((host, port)) but with timeouts.
+    fn dial_host(&self, host: &str, port: u16) -> Result<TcpStream, Error> {
+        let mut last_err = None;
+        for sock_addr in (host, port).to_socket_addrs()? {
+            match self.dial(sock_addr) {
+                Ok(stream) => return Ok(stream),
+                Err(err) => last_err = Some(err),
+            }
+        }
+        Err(last_err.unwrap_or_else(|| {
+            std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "could not resolve to any addresses",
+            )
+            .into()
+        }))
     }
 
     /// Process a control packet received from the database.
@@ -138,6 +200,9 @@ impl Client {
     /// packets are processed. Only data packets are returned.
     fn receive_data_packet(&mut self) -> Result<(Packet, bool), Error> {
         loop {
+            if self.in_connect {
+                self.arm_connect_deadline()?;
+            }
             match self.transport.receive_packet() {
                 Ok(packet) => match packet.packet_type {
                     constants::PACKET_TYPE_CONTROL => {
@@ -154,6 +219,10 @@ impl Client {
                 },
                 Err(err) => {
                     if err.is_call_timeout_exceeded() {
+                        // the connection is discarded on any connect failure
+                        if self.in_connect {
+                            return Err(Error::connect_timeout_exceeded());
+                        }
                         let packet = self.recover_from_error(err)?;
                         return Ok((packet, false));
                     }
@@ -592,6 +661,19 @@ impl Client {
     /// Establishes a connection to the database and returns the client object
     /// as well as database info.
     pub(crate) fn connect(&mut self) -> Result<DbInfo, Error> {
+        self.in_connect = true;
+        self.connect_deadline =
+            self.config.connect_timeout().map(|t| Instant::now() + t);
+        let result = self.connect_with_options();
+        self.in_connect = false;
+        self.connect_deadline = None;
+        let db_info = result?;
+        self.transport.set_read_timeout(None)?;
+        Ok(db_info)
+    }
+
+    /// Tries each of the connect options in turn.
+    fn connect_with_options(&mut self) -> Result<DbInfo, Error> {
         let mut result = Err(Error::unexpected_result());
         let options = self.config.get_options()?;
         for option in options.iter() {
@@ -617,12 +699,7 @@ impl Client {
         address: &Address,
         description: &Description,
     ) -> Result<(), Error> {
-        let stream =
-            if let Some(timeout) = self.config.transport_connect_timeout() {
-                TcpStream::connect_timeout(&sock_addr, timeout)?
-            } else {
-                TcpStream::connect(sock_addr)?
-            };
+        let stream = self.dial(sock_addr)?;
         self.transport.connect(stream, address, &self.config)?;
         let mut address = address.clone();
         let mut connect_data = connect_data.to_string();
@@ -641,7 +718,7 @@ impl Client {
                     address = parse_redirect_data(before)?;
                     connect_data = after.to_string();
                     let new_stream =
-                        TcpStream::connect((address.host(), address.port()))?;
+                        self.dial_host(address.host(), address.port())?;
                     self.transport.connect(
                         new_stream,
                         &address,
@@ -850,6 +927,8 @@ impl Client {
             transaction_in_progress: false,
             pool_id,
             temp_lobs_to_close: Vec::new(),
+            in_connect: false,
+            connect_deadline: None,
         }
     }
 

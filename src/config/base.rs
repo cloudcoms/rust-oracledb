@@ -59,6 +59,7 @@ pub struct Config {
     wallet_location: Option<String>,
     wallet_password: Option<SecretValue>,
     transport_connect_timeout: Option<Duration>,
+    connect_timeout: Option<Duration>,
 }
 
 impl Config {
@@ -265,6 +266,17 @@ impl Config {
         self
     }
 
+    /// Sets the maximum total time allowed for establishing a connection:
+    /// TCP connect, TLS, Oracle Net negotiation and authentication. When it
+    /// expires the attempt fails with
+    /// [ErrorKind::ConnectTimeoutExceeded](crate::ErrorKind) and the socket
+    /// is closed. Host name resolution is not covered. The default (None)
+    /// places no limit on the exchange after the TCP connect.
+    pub fn set_connect_timeout(mut self, value: Option<Duration>) -> Self {
+        self.connect_timeout = value;
+        self
+    }
+
     /// Sets the default transport connect timeout to use when establishing a
     /// connection to the database. If a value is specified in the description
     /// portion of a connect string, that value takes precedence.
@@ -314,6 +326,11 @@ impl Config {
         self.terminal.as_deref().unwrap_or("unknown")
     }
 
+    /// Returns the maximum total time allowed for establishing a connection.
+    pub fn connect_timeout(&self) -> Option<Duration> {
+        self.connect_timeout
+    }
+
     /// Returns the default transport connect timeout that will be used when
     /// establishing a connection to the database. If a value is specified in
     /// the description portion of a connect string, that value takes
@@ -352,6 +369,7 @@ impl Default for Config {
             wallet_location: None,
             wallet_password: None,
             transport_connect_timeout: None,
+            connect_timeout: None,
         }
     }
 }

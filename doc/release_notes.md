@@ -9,6 +9,14 @@ crates.io and is not supported by Oracle.
     connect timeout and ensure it is actually used when establishing a
     connection to the database
     ([issue 35](https://github.com/oracle/rust-oracledb/issues/35)).
+1.  Fixed a partially received packet being discarded when a read failed
+    (for example on a call timeout) before the packet was complete.
+1.  Added `Config::set_connect_timeout()`, the maximum total time for
+    establishing a connection (TCP connect, TLS, Oracle Net negotiation and
+    authentication). When it expires the attempt fails with the new
+    `ErrorKind::ConnectTimeoutExceeded`. Previously only the TCP connect
+    could be bounded and a listener that accepted but never answered blocked
+    the caller indefinitely.
 
 ## rust-oracledb 26.0.0-beta.4 (September 23, 2026)
 
