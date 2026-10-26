@@ -72,8 +72,21 @@ jobs:
           docker logs --tail 50 oracle
           exit 1
 
-      - name: Create the test schema (upstream helper)
-        run: cargo run --bin create_test_schema
+      # Same grants as src/bin/create_test_schema.rs minus CTXAPP: the slim
+      # image has no Oracle Text and no upstream test uses it. Credentials go
+      # through stdin, never the command line.
+      - name: Create the test schema
+        run: |
+          set -euo pipefail
+          docker exec -i oracle sqlplus -s /nolog <<SQL
+          whenever sqlerror exit failure
+          connect ${RSO_TEST_ADMIN_USER}/"${RSO_TEST_ADMIN_PASSWORD}"@FREEPDB1
+          create user ${RSO_TEST_MAIN_USER} identified by "${RSO_TEST_MAIN_PASSWORD}";
+          grant create session, create table, create procedure, create type,
+            create view, select any dictionary, change notification,
+            unlimited tablespace to ${RSO_TEST_MAIN_USER};
+          exit
+          SQL
 
       - name: Break handle tests (live)
         run: cargo test --test test_3600_break -- --nocapture --test-threads=1
