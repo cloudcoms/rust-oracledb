@@ -22,6 +22,12 @@ On top of an upstream release tag, as small commits that each stand alone:
 6. A fix for the reset after an interrupt: the database answers an in-band
    interrupt with a reset marker straight away, and that marker must count,
    or the reset discards the response (ORA-01013) and waits in vain.
+7. Fetched NCHAR/NVARCHAR2 values (and NCLOB fetched as LONG) from a
+   database whose national character set is `UTF8` (id 871, CESU-8) rather
+   than `AL16UTF16`. The database sends this data in its national character
+   set, and upstream always decoded it as UTF-16, which turned Korean and
+   other non-ASCII text into unrelated characters. Reading NCLOB locators
+   (`src/lob.rs`) and NCHAR binds are unchanged and not verified with `UTF8`.
 
 Breaks are always sent in band, as the upstream driver and python-oracledb
 on Windows do. python-oracledb thin on other platforms sends them out of

@@ -341,6 +341,9 @@ pub const TTC_SESSION_STATE_EXPLICIT_BOUNDARY: u8 = 0x40;
 
 // character sets
 pub const CHARSET_ID_UTF8: u16 = 873;
+// Oracle's legacy "UTF8" character set (CESU-8); allowed as a national
+// character set, in which case NCHAR data is not sent as UTF-16
+pub const CHARSET_ID_CESU8: u16 = 871;
 
 // verifier types
 pub const _VERIFIER_TYPE_11G_1: u16 = 0xb152;

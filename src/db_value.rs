@@ -150,7 +150,10 @@ impl DbValue {
                 if bytes.is_empty() {
                     Ok(None)
                 } else if db_type.csfrm == constants::CS_FORM_NCHAR {
-                    let value = utils::utf16be_bytes_to_string(&bytes)?;
+                    let value = utils::nchar_bytes_to_string(
+                        &bytes,
+                        client.get_ncharset_id(),
+                    )?;
                     Ok(Some(DbValue::String(value)))
                 } else {
                     let value = std::str::from_utf8(&bytes)?;
