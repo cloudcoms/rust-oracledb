@@ -14,19 +14,40 @@ concurrency:
 
 jobs:
   check:
-    runs-on: ubuntu-latest
+    if: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.id == github.event.pull_request.base.repo.id }}
+    runs-on:
+      group: ci
+      labels: [self-hosted, Linux, X64, linux-x64, build]
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - name: Rust toolchain
-        run: rustup toolchain install 1.99.1 --profile minimal -c clippy
-      - name: Prepare locked dependencies
-        run: cargo +1.99.1 fetch --locked
-      - name: Clippy
-        run: cargo +1.99.1 clippy --locked --offline --all-targets -- -D warnings
-      - name: Unit tests without Oracle
-        run: cargo +1.99.1 test --locked --offline --lib
-      - name: Optional Arrow feature
-        run: cargo +1.99.1 check --locked --offline --all-targets --features arrow
+      - name: Locked preflight without a database
+        shell: bash
+        run: |
+          set -euo pipefail
+          export PATH="$HOME/.cargo/bin:$PATH"
+          # Reuse the runner's toolchain; never install or change its default.
+          cargo +1.99.1 --version
+          work="$(mktemp -d "$RUNNER_TEMP/rust-oracledb-XXXXXXXX")"
+          trap 'rm -rf -- "$work"' EXIT
+          export CARGO_HOME="$work/cargo"
+          export CARGO_TARGET_DIR="$work/target"
+          export CARGO_INCREMENTAL=0
+          mkdir -p "$CARGO_HOME" "$CARGO_TARGET_DIR"
+          # This job owns cleanup. Keep registry and build bytes bounded;
+          # no persistent cache, images, database or uploaded artifacts.
+          check_caps() {
+            test "$(du -sm "$CARGO_HOME" | cut -f1)" -le 512
+            test "$(du -sm "$CARGO_TARGET_DIR" | cut -f1)" -le 2048
+          }
+          check_caps
+          cargo +1.99.1 fetch --locked
+          check_caps
+          cargo +1.99.1 clippy --locked --offline --all-targets -- -D warnings
+          check_caps
+          cargo +1.99.1 test --locked --offline --lib
+          check_caps
+          cargo +1.99.1 check --locked --offline --all-targets --features arrow
+          check_caps

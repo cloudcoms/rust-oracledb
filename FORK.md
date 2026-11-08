@@ -15,10 +15,9 @@ On top of an upstream release tag, as small commits that each stand alone:
 4. `Connection::break_handle()`: interrupts a call from another thread. The
    handle only records the request; the thread waiting for the database sends
    the interrupt itself (TCP and TLS alike), see `src/break_handle.rs`.
-5. `.github/workflows/break-live.yml`: unit tests plus the live tests
-   (`tests/test_3600_break.rs`, and the upstream suite on 23.26) against
-   throwaway Oracle Database 23.26 Free and 21c XE containers on a
-   GitHub-hosted runner.
+5. Database-free preflight on the organization's existing self-hosted runners.
+   Live tests use the existing cloudkit Oracle instance as an operator-run
+   check; CI does not create an Oracle database or container.
 6. A fix for the reset after an interrupt: the database answers an in-band
    interrupt with a reset marker straight away, and that marker must count,
    or the reset discards the response (ORA-01013) and waits in vain.
@@ -44,8 +43,23 @@ The fork tracks `Cargo.lock` for reproducible DevRelay checks. Run
 `cargo test --locked --offline --lib` without database credentials.
 The optional Arrow feature is checked with
 `cargo check --locked --offline --all-targets --features arrow`.
-`.github/workflows/preflight.yml` runs the same checks on pull requests.
-Live Oracle tests remain in `break-live.yml`; preflight does not replace them.
+`.github/workflows/preflight.yml` runs the same checks on same-repository pull
+requests using group `ci` with explicit Linux x64/build labels. GitHub-hosted
+runners are not used, including for bootstrap. It reuses Rust 1.99.1 and removes
+its per-job Cargo registry (512 MiB cap) and build outputs (2 GiB cap) on exit;
+the job owns cleanup and does not upload artifacts or persist caches.
+
+Live verification is manual against the existing cloudkit Oracle at
+`172.30.1.50:1521/FREEPDB1`. Supply `RSO_TEST_CONNECT_STRING`,
+`RSO_TEST_MAIN_USER`, `RSO_TEST_MAIN_PASSWORD`, `RSO_TEST_ADMIN_USER` and
+`RSO_TEST_ADMIN_PASSWORD` from an existing approved test account, outside Git.
+Do not install Oracle locally, start disposable Oracle containers, or invoke
+`create_test_schema`/`drop_test_schema` against the shared database. The full
+upstream integration suite requires a separately approved test schema.
+The break tests use queries/session cancellation; `test_3600` additionally
+requires access to `v$session`. A limited existing account can run
+`test_3601`, `test_3602`, `test_3603` and `test_3604` individually without that
+dictionary access. Database-free preflight does not establish live parity.
 
 - `main` mirrors upstream `main` and is never committed to.
 - `dbwork/break-<upstream version>` holds the patches on top of the upstream
