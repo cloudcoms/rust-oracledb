@@ -84,16 +84,19 @@ impl BreakState {
 
     /// Invalidates old handles and clears both flags atomically.
     pub(crate) fn new_generation(&self) {
-        let _ = self.state.try_update(
-            Ordering::SeqCst,
-            Ordering::SeqCst,
-            |current| {
-                Some(
-                    (current & !FLAG_MASK)
-                        .wrapping_add(GENERATION_STEP),
-                )
-            },
-        );
+        let mut current = self.state.load(Ordering::SeqCst);
+        loop {
+            let next = (current & !FLAG_MASK).wrapping_add(GENERATION_STEP);
+            match self.state.compare_exchange_weak(
+                current,
+                next,
+                Ordering::SeqCst,
+                Ordering::SeqCst,
+            ) {
+                Ok(_) => break,
+                Err(actual) => current = actual,
+            }
+        }
     }
 }
 
@@ -128,14 +131,18 @@ pub struct BreakHandle {
 impl BreakHandle {
     /// Requests that the call in progress on the connection be interrupted.
     pub fn interrupt(&self) {
-        let _ = self.state.state.try_update(
-            Ordering::SeqCst,
-            Ordering::SeqCst,
-            |current| {
-                (current & !FLAG_MASK == self.generation)
-                    .then_some(current | REQUESTED)
-            },
-        );
+        let mut current = self.state.state.load(Ordering::SeqCst);
+        while (current & !FLAG_MASK) == self.generation {
+            match self.state.state.compare_exchange_weak(
+                current,
+                current | REQUESTED,
+                Ordering::SeqCst,
+                Ordering::SeqCst,
+            ) {
+                Ok(_) => break,
+                Err(actual) => current = actual,
+            }
+        }
     }
 }
 
