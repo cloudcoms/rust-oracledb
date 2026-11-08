@@ -170,16 +170,45 @@ impl Client {
         result
     }
 
-    /// Arms the remaining connect time as the read timeout while a connect
-    /// deadline is in effect.
+    /// The remaining time for the entire connect attempt, across addresses,
+    /// retries, TLS negotiation and authentication.
+    pub(crate) fn remaining_connect_time(&self) -> Result<Option<Duration>, Error> {
+        self.connect_deadline
+            .map(|deadline| {
+                let remaining = deadline.saturating_duration_since(Instant::now());
+                if remaining.is_zero() {
+                    Err(Error::connect_timeout_exceeded())
+                } else {
+                    Ok(remaining)
+                }
+            })
+            .transpose()
+    }
+
+    /// Arms both socket directions before any connect-time I/O, including
+    /// TLS negotiation (which may read while writing a handshake).
     fn arm_connect_deadline(&self) -> Result<(), Error> {
-        if let Some(deadline) = self.connect_deadline {
-            let remaining = deadline.saturating_duration_since(Instant::now());
-            if remaining.is_zero() {
+        if let Some(remaining) = self.remaining_connect_time()? {
+            self.transport.set_read_timeout(Some(remaining))?;
+            self.transport.set_write_timeout(Some(remaining))?;
+        }
+        Ok(())
+    }
+
+    /// A retry delay must not outlive the one overall connect deadline.
+    /// Also called only between attempts (never after the final attempt).
+    pub(crate) fn wait_before_connect_retry(
+        &self,
+        delay: Duration,
+    ) -> Result<(), Error> {
+        if let Some(remaining) = self.remaining_connect_time()? {
+            if delay >= remaining {
+                std::thread::sleep(remaining);
                 return Err(Error::connect_timeout_exceeded());
             }
-            self.transport.set_read_timeout(Some(remaining))?;
         }
+        std::thread::sleep(delay);
+        self.remaining_connect_time()?;
         Ok(())
     }
 
@@ -196,14 +225,10 @@ impl Client {
         sock_addr: SocketAddr,
         transport_timeout: Option<Duration>,
     ) -> Result<TcpStream, Error> {
-        let mut timeout = transport_timeout;
-        if let Some(deadline) = self.connect_deadline {
-            let remaining = deadline.saturating_duration_since(Instant::now());
-            if remaining.is_zero() {
-                return Err(Error::connect_timeout_exceeded());
-            }
-            timeout = Some(timeout.map_or(remaining, |t| t.min(remaining)));
-        }
+        let timeout = match self.remaining_connect_time()? {
+            Some(remaining) => Some(transport_timeout.map_or(remaining, |t| t.min(remaining))),
+            None => transport_timeout,
+        };
         let result = match timeout {
             Some(timeout) => TcpStream::connect_timeout(&sock_addr, timeout),
             None => TcpStream::connect(sock_addr),
@@ -483,23 +508,41 @@ impl Client {
             self.write_piggybacks(&mut buf);
         }
         message.serialize(self, &mut buf);
-        self.transport.send_packets(
-            message.get_packet_type(),
-            message.get_packet_flags(),
-            message.get_data_flags(),
-            buf.get_buf(),
-        )?;
+        if self.in_connect {
+            self.arm_connect_deadline()?;
+        }
+        self.transport
+            .send_packets(
+                message.get_packet_type(),
+                message.get_packet_flags(),
+                message.get_data_flags(),
+                buf.get_buf(),
+            )
+            .map_err(|err| self.connect_write_error(err))?;
         if message.extended_data_needed() {
             buf.clear();
             message.serialize_extended_data(self, &mut buf);
-            self.transport.send_packets(
-                constants::PACKET_TYPE_DATA,
-                0,
-                0,
-                buf.get_buf(),
-            )?;
+            if self.in_connect {
+                self.arm_connect_deadline()?;
+            }
+            self.transport
+                .send_packets(constants::PACKET_TYPE_DATA, 0, 0, buf.get_buf())
+                .map_err(|err| self.connect_write_error(err))?;
+        }
+        if self.in_connect {
+            self.arm_connect_deadline()?;
         }
         Ok(())
+    }
+
+    /// Socket read/write timeouts during connection establishment have a
+    /// different public error kind from call timeouts after login.
+    fn connect_write_error(&self, err: Error) -> Error {
+        if self.in_connect && err.is_call_timeout_exceeded() {
+            Error::connect_timeout_exceeded()
+        } else {
+            err
+        }
     }
 
     /// Called when an unrecoverable error has taken place and the connection
@@ -839,11 +882,17 @@ impl Client {
         self.in_connect = true;
         self.connect_deadline =
             self.config.connect_timeout().map(|t| Instant::now() + t);
-        let result = self.connect_with_options();
+        let result = self
+            .connect_with_options()
+            .and_then(|info| {
+                self.remaining_connect_time()?;
+                Ok(info)
+            });
         self.in_connect = false;
         self.connect_deadline = None;
         let db_info = result?;
         self.transport.set_read_timeout(self.socket_timeout())?;
+        self.transport.set_write_timeout(None)?;
         Ok(db_info)
     }
 
@@ -852,6 +901,7 @@ impl Client {
         let mut result = Err(Error::unexpected_result());
         let options = self.config.get_options()?;
         for option in options.iter() {
+            self.remaining_connect_time()?;
             match option.connect(self) {
                 Ok(_) => {
                     return self.connect_phase_two();
@@ -878,7 +928,9 @@ impl Client {
         let transport_timeout = description
             .effective_transport_connect_timeout(self.config.transport_connect_timeout());
         let stream = self.dial(sock_addr, transport_timeout)?;
-        self.transport.connect(stream, address, &self.config)?;
+        let remaining = self.remaining_connect_time()?;
+        self.transport
+            .connect(stream, address, &self.config, remaining)?;
         self.transport.set_max_packet_size(description.sdu() as usize);
         let mut address = address.clone();
         let mut connect_data = connect_data.to_string();
@@ -898,11 +950,9 @@ impl Client {
                     connect_data = after.to_string();
                     let new_stream =
                         self.dial_host(address.host(), address.port(), transport_timeout)?;
-                    self.transport.connect(
-                        new_stream,
-                        &address,
-                        &self.config,
-                    )?;
+                    let remaining = self.remaining_connect_time()?;
+                    self.transport
+                        .connect(new_stream, &address, &self.config, remaining)?;
                     connect_message = ConnectMessage::new(
                         &connect_data,
                         &address,
@@ -915,6 +965,7 @@ impl Client {
                 }
             }
             if connect_message.tls_renegotiation_needed {
+                self.arm_connect_deadline()?;
                 self.transport.negotiate_tls(address.host(), &self.config)?;
             }
         }

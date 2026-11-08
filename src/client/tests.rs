@@ -304,3 +304,69 @@ fn connect_timeout_bounds_a_silent_listener() {
     assert!(elapsed < Duration::from_secs(2), "took {elapsed:?}");
     peer.join().unwrap();
 }
+
+#[test]
+fn connect_timeout_bounds_a_silent_tcps_listener() {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let (done_send, done_recv) = mpsc::channel::<()>();
+    let peer = thread::spawn(move || {
+        // A TCP listener accepts the connection but never completes TLS.
+        let (_sock, _) = listener.accept().unwrap();
+        done_recv.recv().unwrap();
+    });
+    let descriptor = format!(
+        "(DESCRIPTION=(ADDRESS=(PROTOCOL=tcps)(HOST=127.0.0.1)(PORT={port}))\
+         (CONNECT_DATA=(SERVICE_NAME=service)))"
+    );
+    let config = Config::default()
+        .set_connect_string(&descriptor)
+        .unwrap()
+        .set_connect_timeout(Some(Duration::from_millis(300)));
+    let mut client = Client::new(config, String::new());
+    let started = Instant::now();
+    let err = client.connect().err().unwrap();
+    let elapsed = started.elapsed();
+    done_send.send(()).unwrap();
+    assert_eq!(err.kind(), &ErrorKind::ConnectTimeoutExceeded);
+    assert!(elapsed < Duration::from_secs(2), "took {elapsed:?}");
+    peer.join().unwrap();
+}
+
+#[test]
+fn connect_retry_delay_stops_at_overall_deadline() {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    // No listener remains; the initial TCP dial is refused immediately.
+    drop(listener);
+    let descriptor = format!(
+        "(DESCRIPTION=(RETRY_COUNT=3)(RETRY_DELAY=5)\
+         (ADDRESS=(PROTOCOL=tcp)(HOST=127.0.0.1)(PORT={port}))\
+         (CONNECT_DATA=(SERVICE_NAME=service)))"
+    );
+    let config = Config::default()
+        .set_connect_string(&descriptor)
+        .unwrap()
+        .set_connect_timeout(Some(Duration::from_millis(300)));
+    let mut client = Client::new(config, String::new());
+    let started = Instant::now();
+    let err = client.connect().err().unwrap();
+    let elapsed = started.elapsed();
+    assert_eq!(err.kind(), &ErrorKind::ConnectTimeoutExceeded);
+    assert!(elapsed < Duration::from_secs(2), "took {elapsed:?}");
+}
+
+#[test]
+fn connect_without_retry_does_not_sleep_after_failure() {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    drop(listener);
+    let config = Config::default()
+        .set_connect_string(&format!("127.0.0.1:{port}/service"))
+        .unwrap();
+    let mut client = Client::new(config, String::new());
+    let started = Instant::now();
+    assert!(client.connect().is_err());
+    let elapsed = started.elapsed();
+    assert!(elapsed < Duration::from_millis(750), "took {elapsed:?}");
+}

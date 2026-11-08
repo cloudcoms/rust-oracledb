@@ -134,6 +134,18 @@ impl LowLevelTransport {
         Ok(stream.set_read_timeout(duration)?)
     }
 
+    /// Bounds writes and TLS handshake I/O during connection establishment.
+    pub(crate) fn set_write_timeout(
+        &self,
+        duration: Option<std::time::Duration>,
+    ) -> Result<(), Error> {
+        let stream = match self {
+            Self::Tcp(s) => s,
+            Self::Tls(s) => &s.sock,
+        };
+        Ok(stream.set_write_timeout(duration)?)
+    }
+
     /// Shuts down the low-level transport.
     fn shutdown(&mut self) -> Result<(), Error> {
         let stream = match self {
@@ -339,9 +351,13 @@ impl Transport {
         stream: TcpStream,
         address: &Address,
         config: &Config,
+        remaining: Option<std::time::Duration>,
     ) -> Result<(), Error> {
         stream.set_nodelay(true)?;
-        stream.set_read_timeout(None)?;
+        // TCPS performs TLS handshake I/O through this same socket; never
+        // erase the overall connect deadline between TCP dial and TLS.
+        stream.set_read_timeout(remaining)?;
+        stream.set_write_timeout(remaining)?;
         self.socket_num = get_socket_num(&stream);
         self.low_level_transport = Some(LowLevelTransport::Tcp(stream));
         if address.protocol() == "tcps" {
@@ -480,6 +496,17 @@ impl Transport {
             .as_ref()
             .ok_or_else(Error::not_connected)
             .and_then(|t| t.set_read_timeout(duration))
+    }
+
+    /// Sets the write timeout for TCP or the socket under TCPS.
+    pub(crate) fn set_write_timeout(
+        &self,
+        duration: Option<std::time::Duration>,
+    ) -> Result<(), Error> {
+        self.low_level_transport
+            .as_ref()
+            .ok_or_else(Error::not_connected)
+            .and_then(|t| t.set_write_timeout(duration))
     }
 
     /// Indicates that the full packet size should be used for all subsequent

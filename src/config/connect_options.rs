@@ -861,17 +861,20 @@ impl DescriptionOption {
     /// Attempts to establish a connection to the database using the
     /// information found in the option.
     pub(crate) fn connect(&self, client: &mut Client) -> Result<(), Error> {
-        let num_attempts = self.description.retry_count() + 1;
+        let num_attempts = self.description.retry_count().saturating_add(1);
         let retry_delay = self.description.retry_delay();
         let mut result = Err(Error::unexpected_result());
-        for _ in 0..num_attempts {
+        for attempt in 0..num_attempts {
             for option in self.address_options.iter() {
+                client.remaining_connect_time()?;
                 result = option.connect(client, self);
                 if result.is_ok() {
                     return result;
                 }
             }
-            thread::sleep(retry_delay);
+            if attempt + 1 < num_attempts {
+                client.wait_before_connect_retry(retry_delay)?;
+            }
         }
         result
     }

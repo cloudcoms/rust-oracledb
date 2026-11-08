@@ -11,7 +11,10 @@ On top of an upstream release tag, as small commits that each stand alone:
 1. The upstream transport connect timeout (included in beta.5; no fork cherry-pick).
 2. A fix for a partially received packet being dropped after a read timeout.
 3. `Config::set_connect_timeout()`: one deadline for TCP, TLS, Oracle Net and
-   authentication (`ErrorKind::ConnectTimeoutExceeded`).
+   authentication (`ErrorKind::ConnectTimeoutExceeded`). Connect-time reads
+   and writes are bounded, including TCPS handshake; descriptor-specific
+   transport timeouts still take precedence. Retry delay is capped by the
+   remaining overall deadline and never runs after the final attempt.
 4. `Connection::break_handle()`: interrupts a call from another thread. The
    handle only records the request; the thread waiting for the database sends
    the interrupt itself (TCP and TLS alike), see `src/break_handle.rs`.
