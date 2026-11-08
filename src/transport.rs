@@ -653,7 +653,8 @@ mod tests {
         stream
             .set_read_timeout(Some(Duration::from_millis(50)))
             .unwrap();
-        let mut transport = Transport::new(8192);
+        let mut transport = Transport::new();
+        transport.set_max_packet_size(8192);
         transport.low_level_transport = Some(LowLevelTransport::Tcp(stream));
 
         let err = transport.receive_packet().err().unwrap();
