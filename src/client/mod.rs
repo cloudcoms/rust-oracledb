@@ -191,8 +191,12 @@ impl Client {
 
     /// Opens a TCP connection to the given address, honouring the transport
     /// connect timeout and the overall connect deadline.
-    fn dial(&self, sock_addr: SocketAddr) -> Result<TcpStream, Error> {
-        let mut timeout = self.config.transport_connect_timeout();
+    fn dial(
+        &self,
+        sock_addr: SocketAddr,
+        transport_timeout: Option<Duration>,
+    ) -> Result<TcpStream, Error> {
+        let mut timeout = transport_timeout;
         if let Some(deadline) = self.connect_deadline {
             let remaining = deadline.saturating_duration_since(Instant::now());
             if remaining.is_zero() {
@@ -215,10 +219,15 @@ impl Client {
 
     /// Resolves the host and opens a TCP connection to the first address that
     /// accepts it, like TcpStream::connect((host, port)) but with timeouts.
-    fn dial_host(&self, host: &str, port: u16) -> Result<TcpStream, Error> {
+    fn dial_host(
+        &self,
+        host: &str,
+        port: u16,
+        transport_timeout: Option<Duration>,
+    ) -> Result<TcpStream, Error> {
         let mut last_err = None;
         for sock_addr in (host, port).to_socket_addrs()? {
-            match self.dial(sock_addr) {
+            match self.dial(sock_addr, transport_timeout) {
                 Ok(stream) => return Ok(stream),
                 Err(err) => last_err = Some(err),
             }
@@ -865,7 +874,10 @@ impl Client {
         address: &Address,
         description: &Description,
     ) -> Result<(), Error> {
-        let stream = self.dial(sock_addr)?;
+        // A DESCRIPTION override takes precedence over the Config default.
+        let transport_timeout = description
+            .effective_transport_connect_timeout(self.config.transport_connect_timeout());
+        let stream = self.dial(sock_addr, transport_timeout)?;
         self.transport.connect(stream, address, &self.config)?;
         self.transport.set_max_packet_size(description.sdu() as usize);
         let mut address = address.clone();
@@ -885,7 +897,7 @@ impl Client {
                     address = parse_redirect_data(before)?;
                     connect_data = after.to_string();
                     let new_stream =
-                        self.dial_host(address.host(), address.port())?;
+                        self.dial_host(address.host(), address.port(), transport_timeout)?;
                     self.transport.connect(
                         new_stream,
                         &address,

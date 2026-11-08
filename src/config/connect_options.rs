@@ -611,6 +611,14 @@ impl Description {
         Ok(description)
     }
 
+    /// Returns the per-description transport timeout or the Config fallback.
+    pub(crate) fn effective_transport_connect_timeout(
+        &self,
+        default: Option<Duration>,
+    ) -> Option<Duration> {
+        self.transport_connect_timeout.or(default)
+    }
+
     /// Returns the size of the SDU to use.
     pub(crate) fn sdu(&self) -> u32 {
         self.sdu.unwrap_or(8192)
@@ -907,5 +915,27 @@ where
     // without failover or load balance, just the first child is active
     } else {
         children[..1].to_vec()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn description_transport_timeout_overrides_default() {
+        let default = Some(Duration::from_secs(30));
+        let mut description = Description::new();
+        assert_eq!(description.effective_transport_connect_timeout(default), default);
+
+        description.transport_connect_timeout = Some(Duration::from_millis(250));
+        assert_eq!(
+            description.effective_transport_connect_timeout(default),
+            Some(Duration::from_millis(250))
+        );
+        assert_eq!(
+            description.effective_transport_connect_timeout(None),
+            Some(Duration::from_millis(250))
+        );
     }
 }
