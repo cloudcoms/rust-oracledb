@@ -43,7 +43,7 @@ The fork tracks `Cargo.lock` for reproducible DevRelay checks. Run
 `cargo test --locked --offline --lib` without database credentials.
 The optional Arrow feature is checked with
 `cargo check --locked --offline --all-targets --features arrow`.
-`.github/workflows/preflight.yml` runs the same checks on owner/member pull
+`.github/workflows/preflight.yml` runs the same checks on same-repository pull
 requests using group `ci` with explicit Linux x64/build labels. GitHub-hosted
 runners are not used, including for bootstrap. It reuses Rust 1.99.1 and removes
 its per-job Cargo registry (512 MiB cap) and build outputs (2 GiB cap) on exit;
