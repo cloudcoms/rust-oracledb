@@ -114,6 +114,8 @@ where
         .set_connect_string(&format!("{addr}/service"))
         .unwrap();
     let mut client = Client::new(config, String::new());
+    // beta.5 no longer allocates the transport packet buffer in new().
+    client.transport.set_max_packet_size(8192);
     client
         .transport
         .connect_stream_for_test(TcpStream::connect(addr).unwrap());
