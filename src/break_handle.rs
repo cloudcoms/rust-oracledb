@@ -34,60 +34,66 @@
 //-----------------------------------------------------------------------------
 
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU64, Ordering};
+
+const ENABLED: u64 = 1;
+const REQUESTED: u64 = 2;
+const FLAG_MASK: u64 = ENABLED | REQUESTED;
+const GENERATION_STEP: u64 = FLAG_MASK + 1;
 
 /// State shared between a connection and the handles created for it.
+/// The generation and flags live in one atomic word, so an old handle can
+/// never overwrite an interrupt requested by a newer connection user.
 #[derive(Debug)]
 pub(crate) struct BreakState {
-    /// Changes whenever the connection ends a request (for example when it is
-    /// returned to a pool) so that handles created earlier have no effect.
-    generation: AtomicU64,
-    /// Generation for which an interrupt was requested, or 0 for none.
-    requested: AtomicU64,
-    /// Set once a handle exists. While set, the client waits for the database
-    /// in short slices so that it can notice a request.
-    enabled: AtomicBool,
+    /// Upper bits hold the generation; the two low bits track whether the
+    /// current user has created a handle and requested an interrupt.
+    state: AtomicU64,
 }
 
 impl BreakState {
     pub(crate) fn new() -> Arc<Self> {
         Arc::new(Self {
-            generation: AtomicU64::new(1),
-            requested: AtomicU64::new(0),
-            enabled: AtomicBool::new(false),
+            state: AtomicU64::new(GENERATION_STEP),
         })
     }
 
-    /// Clears a pending request.
+    /// Clears a pending request without changing the handle generation.
     pub(crate) fn clear(&self) {
-        self.requested.store(0, Ordering::SeqCst);
+        self.state.fetch_and(!REQUESTED, Ordering::SeqCst);
     }
 
-    /// Creates a handle bound to the current generation.
+    /// Creates a handle bound atomically to the current generation.
     pub(crate) fn handle(self: &Arc<Self>) -> BreakHandle {
-        self.enabled.store(true, Ordering::SeqCst);
+        let previous = self.state.fetch_or(ENABLED, Ordering::SeqCst);
         BreakHandle {
             state: Arc::clone(self),
-            generation: self.generation.load(Ordering::SeqCst),
+            generation: previous & !FLAG_MASK,
         }
     }
 
     /// Returns whether any handle exists for the current generation.
     pub(crate) fn is_enabled(&self) -> bool {
-        self.enabled.load(Ordering::SeqCst)
+        self.state.load(Ordering::SeqCst) & ENABLED != 0
     }
 
-    /// Returns whether an interrupt was requested by a current handle.
+    /// Returns whether the current generation requested an interrupt.
     pub(crate) fn is_requested(&self) -> bool {
-        let requested = self.requested.load(Ordering::SeqCst);
-        requested != 0 && requested == self.generation.load(Ordering::SeqCst)
+        self.state.load(Ordering::SeqCst) & REQUESTED != 0
     }
 
-    /// Invalidates all existing handles.
+    /// Invalidates old handles and clears both flags atomically.
     pub(crate) fn new_generation(&self) {
-        self.generation.fetch_add(1, Ordering::SeqCst);
-        self.enabled.store(false, Ordering::SeqCst);
-        self.clear();
+        let _ = self.state.fetch_update(
+            Ordering::SeqCst,
+            Ordering::SeqCst,
+            |current| {
+                Some(
+                    (current & !FLAG_MASK)
+                        .wrapping_add(GENERATION_STEP),
+                )
+            },
+        );
     }
 }
 
@@ -122,9 +128,14 @@ pub struct BreakHandle {
 impl BreakHandle {
     /// Requests that the call in progress on the connection be interrupted.
     pub fn interrupt(&self) {
-        self.state
-            .requested
-            .store(self.generation, Ordering::SeqCst);
+        let _ = self.state.state.fetch_update(
+            Ordering::SeqCst,
+            Ordering::SeqCst,
+            |current| {
+                (current & !FLAG_MASK == self.generation)
+                    .then_some(current | REQUESTED)
+            },
+        );
     }
 }
 
@@ -156,6 +167,13 @@ mod tests {
         let current = state.handle();
         current.interrupt();
         assert!(state.is_requested());
+        // A stale user must not erase a pending request from the new user.
+        stale.interrupt();
+        assert!(state.is_requested());
+        state.clear();
+        stale.interrupt();
+        assert!(!state.is_requested());
+        assert!(state.is_enabled());
         // a request racing with the end of the request is discarded
         state.new_generation();
         assert!(!state.is_requested());
