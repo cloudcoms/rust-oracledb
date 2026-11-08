@@ -15,9 +15,10 @@ On top of an upstream release tag, as small commits that each stand alone:
 4. `Connection::break_handle()`: interrupts a call from another thread. The
    handle only records the request; the thread waiting for the database sends
    the interrupt itself (TCP and TLS alike), see `src/break_handle.rs`.
-5. Database-free preflight on the organization's existing self-hosted runners.
-   Live tests use the existing cloudkit Oracle instance as an operator-run
-   check; CI does not create an Oracle database or container.
+5. Draft database-free preflight and Ready-only approved Oracle integration
+   tests on the organization's existing self-hosted Linux x64 CI runners.
+   Tests reuse the existing cloudkit Oracle; CI does not create an Oracle
+   database, schema, or container.
 6. A fix for the reset after an interrupt: the database answers an in-band
    interrupt with a reset marker straight away, and that marker must count,
    or the reset discards the response (ORA-01013) and waits in vain.
@@ -49,17 +50,26 @@ runners are not used, including for bootstrap. It reuses Rust 1.99.1 and removes
 its per-job Cargo registry (512 MiB cap) and build outputs (2 GiB cap) on exit;
 the job owns cleanup and does not upload artifacts or persist caches.
 
-Live verification is manual against the existing cloudkit Oracle at
-`172.30.1.50:1521/FREEPDB1`. Supply `RSO_TEST_CONNECT_STRING`,
-`RSO_TEST_MAIN_USER`, `RSO_TEST_MAIN_PASSWORD`, `RSO_TEST_ADMIN_USER` and
-`RSO_TEST_ADMIN_PASSWORD` from an existing approved test account, outside Git.
-Do not install Oracle locally, start disposable Oracle containers, or invoke
+Ready-only CI (trusted same-repository PRs, no forks) uses a protected
+`oracle-live` GitHub Environment containing `RSO_TEST_CONNECT_STRING`,
+`RSO_TEST_MAIN_USER` and `RSO_TEST_MAIN_PASSWORD` as secrets. The existing
+approved limited account must access the already-running cloudkit Oracle;
+the connection string is kept out of Git. Configure the Environment's
+required reviewers and branch restrictions before placing credentials there.
+Missing credentials fail the Ready CI gate closed. No live tests run on Draft PRs.
+Do not install Oracle locally, start database containers, or invoke
 `create_test_schema`/`drop_test_schema` against the shared database. The full
-upstream integration suite requires a separately approved test schema.
-The break tests use queries/session cancellation; `test_3600` additionally
-requires access to `v$session`. A limited existing account can run
-`test_3601`, `test_3602`, `test_3603` and `test_3604` individually without that
-dictionary access. Database-free preflight does not establish live parity.
+upstream integration suite still requires a separately approved test schema.
+
+The mandatory limited-account Ready tests `test_3601..3604` use a
+test-local fixture without upstream's eager administrator connection. They
+run SELECT queries, call timeout, and DBMS_SESSION.SLEEP without DDL.
+The optional `test_3600` additionally requires `RSO_TEST_ADMIN_USER` and
+`RSO_TEST_ADMIN_PASSWORD` secrets for an approved account with `v$session`
+read access. This test is explicitly reported skipped if they are absent.
+CI success without it does not establish `v$session` parity. Confirm national
+charset and TCPS coverage separately; never infer CESU-8 validation from
+break tests.
 
 - `main` mirrors upstream `main` and is never committed to.
 - `dbwork/break-<upstream version>` holds the patches on top of the upstream
@@ -88,4 +98,6 @@ this fork is proposed upstream as code until that is settled.
   interrupt + reset recovery, and CESU-8 NCHAR decoding.
 - Removes the upstream transport timeout cherry-pick already shipped in beta.5.
 - Fork preflight is database-free on an existing organization self-hosted runner.
-- Existing cloudkit Oracle live validation is a separate manual release gate.
+- Ready CI runs approved limited-account break tests on the existing Oracle;
+  `test_3600` requires separately approved `v$session` access. Charset/TCPS
+  coverage is separately recorded, never inferred from this gate.

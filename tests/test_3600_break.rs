@@ -21,7 +21,26 @@ use std::time::{Duration, Instant};
 
 use rstest::*;
 
-use common::conn;
+// The upstream fixture validates administrator credentials eagerly, even
+// for the limited-account tests below. Keep privileged credentials optional.
+#[fixture]
+fn conn() -> oracledb::Connection {
+    let user = std::env::var("RSO_TEST_MAIN_USER")
+        .expect("approved RSO_TEST_MAIN_USER is required");
+    let password = std::env::var("RSO_TEST_MAIN_PASSWORD")
+        .expect("approved RSO_TEST_MAIN_PASSWORD is required");
+    let connect_string = std::env::var("RSO_TEST_CONNECT_STRING")
+        .expect("approved RSO_TEST_CONNECT_STRING is required");
+    let config = oracledb::Config::default()
+        .set_credentials(&user, &password)
+        .set_connect_string(&connect_string)
+        .expect("invalid approved Oracle connect string");
+    let conn = oracledb::connect(config)
+        .unwrap_or_else(|_| panic!("unable to connect using approved Oracle test account"));
+    conn.execute("alter session set time_zone = 'UTC'", &[])
+        .expect("unable to set test session time zone");
+    conn
+}
 
 /// A query that keeps the server busy (and checking for interrupts) for far
 /// longer than any of these tests run.
