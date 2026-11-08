@@ -8,7 +8,7 @@ distribution of the driver.
 
 On top of an upstream release tag, as small commits that each stand alone:
 
-1. The upstream transport connect timeout (cherry-pick of upstream e9cfda6).
+1. The upstream transport connect timeout (included in beta.5; no fork cherry-pick).
 2. A fix for a partially received packet being dropped after a read timeout.
 3. `Config::set_connect_timeout()`: one deadline for TCP, TLS, Oracle Net and
    authentication (`ErrorKind::ConnectTimeoutExceeded`).
@@ -63,7 +63,7 @@ dictionary access. Database-free preflight does not establish live parity.
 
 - `main` mirrors upstream `main` and is never committed to.
 - `dbwork/break-<upstream version>` holds the patches on top of the upstream
-  tag of that version, e.g. `dbwork/break-beta4` on `v26.0.0-beta.4`. The
+  tag of that version, e.g. `dbwork/break-beta5` on `v26.0.0-beta.5`. The
   crate version is unchanged, so `[patch.crates-io]` replaces exactly the
   version the consumer pins.
 - Consumers pin a full commit SHA, and every pinned SHA is also tagged
@@ -80,3 +80,12 @@ this fork is proposed upstream as code until that is settled.
 
 [cloudcoms/dbwork]: https://github.com/cloudcoms/dbwork
 [oracle/rust-oracledb]: https://github.com/oracle/rust-oracledb
+
+## Beta.5 sync (2026-11-08)
+
+- Upstream base: `v26.0.0-beta.5` (`3aaa64dd3e44683ca831338991a497bb85fe0e49`).
+- Preserves read-timeout packet buffering, overall connect deadline, cross-thread
+  interrupt + reset recovery, and CESU-8 NCHAR decoding.
+- Removes the upstream transport timeout cherry-pick already shipped in beta.5.
+- Fork preflight is database-free on an existing organization self-hosted runner.
+- Existing cloudkit Oracle live validation is a separate manual release gate.
