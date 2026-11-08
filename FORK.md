@@ -1,0 +1,82 @@
+# cloudcoms/rust-oracledb (fork)
+
+This fork exists for one consumer, [cloudcoms/dbwork], until upstream
+[oracle/rust-oracledb] ships an equivalent feature. It is not a general
+distribution of the driver.
+
+## What it adds
+
+On top of an upstream release tag, as small commits that each stand alone:
+
+1. The upstream transport connect timeout (cherry-pick of upstream e9cfda6).
+2. A fix for a partially received packet being dropped after a read timeout.
+3. `Config::set_connect_timeout()`: one deadline for TCP, TLS, Oracle Net and
+   authentication (`ErrorKind::ConnectTimeoutExceeded`).
+4. `Connection::break_handle()`: interrupts a call from another thread. The
+   handle only records the request; the thread waiting for the database sends
+   the interrupt itself (TCP and TLS alike), see `src/break_handle.rs`.
+5. Database-free preflight on the organization's existing self-hosted runners.
+   Live tests use the existing cloudkit Oracle instance as an operator-run
+   check; CI does not create an Oracle database or container.
+6. A fix for the reset after an interrupt: the database answers an in-band
+   interrupt with a reset marker straight away, and that marker must count,
+   or the reset discards the response (ORA-01013) and waits in vain.
+7. Fetched NCHAR/NVARCHAR2 values (and NCLOB fetched as LONG) from a
+   database whose national character set is `UTF8` (id 871, CESU-8) rather
+   than `AL16UTF16`. The database sends this data in its national character
+   set, and upstream always decoded it as UTF-16, which turned Korean and
+   other non-ASCII text into unrelated characters. Reading NCLOB locators
+   (`src/lob.rs`) and NCHAR binds are unchanged and not verified with `UTF8`.
+
+Breaks are always sent in band, as the upstream driver and python-oracledb
+on Windows do. python-oracledb thin on other platforms sends them out of
+band (TCP urgent data) when the server offers it; neither tested database
+(23.26 Free, 21c XE) offered it, so that path is not carried here.
+
+Design discussion: oracle/rust-oracledb#24.
+
+## Branches and alignment with upstream
+
+The fork tracks `Cargo.lock` for reproducible DevRelay checks. Run
+`cargo fetch --locked` during dependency preparation, then
+`cargo clippy --locked --offline --all-targets -- -D warnings` and
+`cargo test --locked --offline --lib` without database credentials.
+The optional Arrow feature is checked with
+`cargo check --locked --offline --all-targets --features arrow`.
+`.github/workflows/preflight.yml` runs the same checks on same-repository pull
+requests using group `ci` with explicit Linux x64/build labels. GitHub-hosted
+runners are not used, including for bootstrap. It reuses Rust 1.99.1 and removes
+its per-job Cargo registry (512 MiB cap) and build outputs (2 GiB cap) on exit;
+the job owns cleanup and does not upload artifacts or persist caches.
+
+Live verification is manual against the existing cloudkit Oracle at
+`172.30.1.50:1521/FREEPDB1`. Supply `RSO_TEST_CONNECT_STRING`,
+`RSO_TEST_MAIN_USER`, `RSO_TEST_MAIN_PASSWORD`, `RSO_TEST_ADMIN_USER` and
+`RSO_TEST_ADMIN_PASSWORD` from an existing approved test account, outside Git.
+Do not install Oracle locally, start disposable Oracle containers, or invoke
+`create_test_schema`/`drop_test_schema` against the shared database. The full
+upstream integration suite requires a separately approved test schema.
+The break tests use queries/session cancellation; `test_3600` additionally
+requires access to `v$session`. A limited existing account can run
+`test_3601`, `test_3602`, `test_3603` and `test_3604` individually without that
+dictionary access. Database-free preflight does not establish live parity.
+
+- `main` mirrors upstream `main` and is never committed to.
+- `dbwork/break-<upstream version>` holds the patches on top of the upstream
+  tag of that version, e.g. `dbwork/break-beta4` on `v26.0.0-beta.4`. The
+  crate version is unchanged, so `[patch.crates-io]` replaces exactly the
+  version the consumer pins.
+- Consumers pin a full commit SHA, and every pinned SHA is also tagged
+  (`dbwork-<upstream version>-break.<n>`) so it stays reachable.
+- When upstream releases a new version: create a new branch from the new tag,
+  cherry-pick the patches (dropping any that upstream now covers), let the CI
+  pass, tag it, then update the consumer's pin in a reviewed PR. Old branches
+  and tags are kept for rollback.
+- When upstream ships an equivalent break/connect-timeout API, the consumer
+  returns to the crates.io release and this fork is archived.
+
+Contributions upstream require the Oracle Contributor Agreement; nothing from
+this fork is proposed upstream as code until that is settled.
+
+[cloudcoms/dbwork]: https://github.com/cloudcoms/dbwork
+[oracle/rust-oracledb]: https://github.com/oracle/rust-oracledb
