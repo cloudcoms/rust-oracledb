@@ -84,7 +84,7 @@ impl BreakState {
 
     /// Invalidates old handles and clears both flags atomically.
     pub(crate) fn new_generation(&self) {
-        let _ = self.state.fetch_update(
+        let _ = self.state.try_update(
             Ordering::SeqCst,
             Ordering::SeqCst,
             |current| {
@@ -128,7 +128,7 @@ pub struct BreakHandle {
 impl BreakHandle {
     /// Requests that the call in progress on the connection be interrupted.
     pub fn interrupt(&self) {
-        let _ = self.state.state.fetch_update(
+        let _ = self.state.state.try_update(
             Ordering::SeqCst,
             Ordering::SeqCst,
             |current| {
