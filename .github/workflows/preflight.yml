@@ -1,0 +1,32 @@
+name: Fork preflight
+
+on:
+  pull_request:
+    branches: ['dbwork/**']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: fork-preflight-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Rust toolchain
+        run: rustup toolchain install 1.99.1 --profile minimal -c clippy
+      - name: Prepare locked dependencies
+        run: cargo +1.99.1 fetch --locked
+      - name: Clippy
+        run: cargo +1.99.1 clippy --locked --offline --all-targets -- -D warnings
+      - name: Unit tests without Oracle
+        run: cargo +1.99.1 test --locked --offline --lib
+      - name: Optional Arrow feature
+        run: cargo +1.99.1 check --locked --offline --all-targets --features arrow

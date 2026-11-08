@@ -38,6 +38,15 @@ Design discussion: oracle/rust-oracledb#24.
 
 ## Branches and alignment with upstream
 
+The fork tracks `Cargo.lock` for reproducible DevRelay checks. Run
+`cargo fetch --locked` during dependency preparation, then
+`cargo clippy --locked --offline --all-targets -- -D warnings` and
+`cargo test --locked --offline --lib` without database credentials.
+The optional Arrow feature is checked with
+`cargo check --locked --offline --all-targets --features arrow`.
+`.github/workflows/preflight.yml` runs the same checks on pull requests.
+Live Oracle tests remain in `break-live.yml`; preflight does not replace them.
+
 - `main` mirrors upstream `main` and is never committed to.
 - `dbwork/break-<upstream version>` holds the patches on top of the upstream
   tag of that version, e.g. `dbwork/break-beta4` on `v26.0.0-beta.4`. The
