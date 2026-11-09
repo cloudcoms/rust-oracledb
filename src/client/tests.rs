@@ -375,5 +375,7 @@ fn connect_without_retry_does_not_sleep_after_failure() {
     let started = Instant::now();
     assert!(client.connect().is_err());
     let elapsed = started.elapsed();
-    assert!(elapsed < Duration::from_millis(750), "took {elapsed:?}");
+    // A refused TCP dial can take ~2s on Windows. The explicit five-second
+    // retry delay must NOT be added after the final failed attempt.
+    assert!(elapsed < Duration::from_secs(4), "took {elapsed:?}");
 }
