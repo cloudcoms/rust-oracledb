@@ -126,7 +126,7 @@ jobs:
           set -euo pipefail
           export PATH="$HOME/.cargo/bin:$PATH"
           if [[ -z "$RSO_TEST_ADMIN_USER" || -z "$RSO_TEST_ADMIN_PASSWORD" ]]; then
-            echo "::notice::test_3600 skipped: approved v$session account not configured"
+            echo '::notice::test_3600 skipped: approved v$session account not configured'
             exit 0
           fi
           cargo +1.99.1 test --locked --offline --test test_3600_break \
