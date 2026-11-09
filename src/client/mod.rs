@@ -201,11 +201,11 @@ impl Client {
         &self,
         delay: Duration,
     ) -> Result<(), Error> {
-        if let Some(remaining) = self.remaining_connect_time()? {
-            if delay >= remaining {
-                std::thread::sleep(remaining);
-                return Err(Error::connect_timeout_exceeded());
-            }
+        if let Some(remaining) = self.remaining_connect_time()?
+            && delay >= remaining
+        {
+            std::thread::sleep(remaining);
+            return Err(Error::connect_timeout_exceeded());
         }
         std::thread::sleep(delay);
         self.remaining_connect_time()?;

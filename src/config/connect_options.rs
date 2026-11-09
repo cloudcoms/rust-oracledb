@@ -42,7 +42,6 @@ use rand::prelude::SliceRandom;
 use std::net::IpAddr;
 use std::net::SocketAddr;
 use std::net::ToSocketAddrs;
-use std::thread;
 use std::time::Duration;
 
 #[derive(Clone, PartialEq, Eq)]

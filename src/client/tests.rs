@@ -361,8 +361,15 @@ fn connect_without_retry_does_not_sleep_after_failure() {
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let port = listener.local_addr().unwrap().port();
     drop(listener);
+    // Easy Connect adds its own retry policy; use an explicit no-retry
+    // descriptor to isolate the bug (sleep after the last attempt).
+    let descriptor = format!(
+        "(DESCRIPTION=(RETRY_COUNT=0)(RETRY_DELAY=5)\
+         (ADDRESS=(PROTOCOL=tcp)(HOST=127.0.0.1)(PORT={port}))\
+         (CONNECT_DATA=(SERVICE_NAME=service)))"
+    );
     let config = Config::default()
-        .set_connect_string(&format!("127.0.0.1:{port}/service"))
+        .set_connect_string(&descriptor)
         .unwrap();
     let mut client = Client::new(config, String::new());
     let started = Instant::now();
