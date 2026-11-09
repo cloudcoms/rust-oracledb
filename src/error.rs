@@ -45,6 +45,7 @@ pub enum ErrorKind {
     CallTimeoutExceeded,
     CannotConvertToArrowDecimal128(String, u8, i8),
     ColumnTruncated(usize, usize),
+    ConnectTimeoutExceeded,
     DbError(DbError),
     DbObjectTypeUnavailable,
     DeadConnection,
@@ -208,6 +209,9 @@ impl fmt::Display for Error {
                 fmt,
                 "{num} cannot be converted to an Apache Arrow \
                  decimal128({precision}, {scale})"
+            )?,
+            ErrorKind::ConnectTimeoutExceeded => fmt.write_str(
+                "the configured connect timeout was exceeded",
             )?,
             ErrorKind::ColumnTruncated(col_value_size, actual_size) => write!(
                 fmt,
@@ -519,6 +523,10 @@ impl Error {
             ErrorKind::ColumnTruncated(col_value_size, actual_size),
             None,
         )
+    }
+
+    pub(crate) fn connect_timeout_exceeded() -> Error {
+        Error::new(ErrorKind::ConnectTimeoutExceeded, None)
     }
 
     pub(crate) fn db_error(db_error: DbError) -> Error {

@@ -134,6 +134,18 @@ impl LowLevelTransport {
         Ok(stream.set_read_timeout(duration)?)
     }
 
+    /// Bounds writes and TLS handshake I/O during connection establishment.
+    pub(crate) fn set_write_timeout(
+        &self,
+        duration: Option<std::time::Duration>,
+    ) -> Result<(), Error> {
+        let stream = match self {
+            Self::Tcp(s) => s,
+            Self::Tls(s) => &s.sock,
+        };
+        Ok(stream.set_write_timeout(duration)?)
+    }
+
     /// Shuts down the low-level transport.
     fn shutdown(&mut self) -> Result<(), Error> {
         let stream = match self {
@@ -249,10 +261,16 @@ impl Transport {
         if self.residual_bytes <= 4 {
             return None;
         }
-        self.last_packet_bytes = self.get_packet_size();
-        if self.residual_bytes < self.last_packet_bytes {
+        // Only record the packet size once the whole packet is buffered. A
+        // read can fail (e.g. a read timeout) while a packet is incomplete;
+        // receive_packet() treats a non-zero last_packet_bytes as "a packet
+        // was consumed" and would otherwise shift the partial packet away on
+        // the next call.
+        let packet_size = self.get_packet_size();
+        if self.residual_bytes < packet_size {
             return None;
         }
+        self.last_packet_bytes = packet_size;
         self.residual_bytes -= self.last_packet_bytes;
         let packet_buf = &self.read_buf[0..self.last_packet_bytes];
         if self.print_packets {
@@ -333,9 +351,13 @@ impl Transport {
         stream: TcpStream,
         address: &Address,
         config: &Config,
+        remaining: Option<std::time::Duration>,
     ) -> Result<(), Error> {
         stream.set_nodelay(true)?;
-        stream.set_read_timeout(None)?;
+        // TCPS performs TLS handshake I/O through this same socket; never
+        // erase the overall connect deadline between TCP dial and TLS.
+        stream.set_read_timeout(remaining)?;
+        stream.set_write_timeout(remaining)?;
         self.socket_num = get_socket_num(&stream);
         self.low_level_transport = Some(LowLevelTransport::Tcp(stream));
         if address.protocol() == "tcps" {
@@ -476,10 +498,28 @@ impl Transport {
             .and_then(|t| t.set_read_timeout(duration))
     }
 
+    /// Sets the write timeout for TCP or the socket under TCPS.
+    pub(crate) fn set_write_timeout(
+        &self,
+        duration: Option<std::time::Duration>,
+    ) -> Result<(), Error> {
+        self.low_level_transport
+            .as_ref()
+            .ok_or_else(Error::not_connected)
+            .and_then(|t| t.set_write_timeout(duration))
+    }
+
     /// Indicates that the full packet size should be used for all subsequent
     /// packets sent on the transport.
     pub(crate) fn set_full_packet_size(&mut self) {
         self.full_packet_size = true;
+    }
+
+    /// Installs an already connected stream without any negotiation.
+    #[cfg(test)]
+    pub(crate) fn connect_stream_for_test(&mut self, stream: TcpStream) {
+        stream.set_nodelay(true).unwrap();
+        self.low_level_transport = Some(LowLevelTransport::Tcp(stream));
     }
 
     /// Returns whether this transport is currently wrapped in TLS.
@@ -596,5 +636,64 @@ impl rustls::client::ResolvesClientCert for CustomClientCertResolver {
 
     fn has_certs(&self) -> bool {
         self.key.is_some()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::net::TcpListener;
+    use std::sync::mpsc;
+    use std::thread;
+    use std::time::Duration;
+
+    /// Builds a non-data packet with a 16-bit length header (pre-negotiation
+    /// framing) and the given body.
+    fn packet_bytes(packet_type: u8, body: &[u8]) -> Vec<u8> {
+        let len = u16::try_from(body.len() + 8).unwrap();
+        let mut bytes = len.to_be_bytes().to_vec();
+        bytes.extend([0, 0, packet_type, 0, 0, 0]);
+        bytes.extend(body);
+        bytes
+    }
+
+    #[test]
+    fn read_timeout_inside_a_packet_keeps_the_partial_packet() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        let first = packet_bytes(constants::PACKET_TYPE_MARKER, &[1, 0, 2, 9]);
+        let second = packet_bytes(constants::PACKET_TYPE_MARKER, &[1, 0, 1]);
+        let (resume_send, resume_recv) = mpsc::channel::<()>();
+        let (first_c, second_c) = (first.clone(), second.clone());
+        let server = thread::spawn(move || {
+            let (mut sock, _) = listener.accept().unwrap();
+            // header plus part of the body: the client sees a partial packet
+            sock.write_all(&first_c[..10]).unwrap();
+            sock.flush().unwrap();
+            resume_recv.recv().unwrap();
+            sock.write_all(&first_c[10..]).unwrap();
+            sock.write_all(&second_c).unwrap();
+            sock.flush().unwrap();
+        });
+
+        let stream = TcpStream::connect(addr).unwrap();
+        stream
+            .set_read_timeout(Some(Duration::from_millis(50)))
+            .unwrap();
+        let mut transport = Transport::new();
+        transport.set_max_packet_size(8192);
+        transport.low_level_transport = Some(LowLevelTransport::Tcp(stream));
+
+        let err = transport.receive_packet().err().unwrap();
+        assert!(err.is_call_timeout_exceeded());
+        resume_send.send(()).unwrap();
+        transport.set_read_timeout(None).unwrap();
+
+        let packet = transport.receive_packet().unwrap();
+        assert_eq!(packet.packet_type, constants::PACKET_TYPE_MARKER);
+        assert_eq!(packet.buf, first[8..]);
+        let packet = transport.receive_packet().unwrap();
+        assert_eq!(packet.buf, second[8..]);
+        server.join().unwrap();
     }
 }

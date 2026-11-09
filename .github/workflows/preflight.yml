@@ -52,3 +52,93 @@ jobs:
           check_caps
           cargo +1.99.1 check --locked --offline --all-targets --features arrow
           check_caps
+
+  # Trusted Ready-only CI; never run against fork heads or Draft PRs.
+  oracle-live:
+    name: Approved Oracle live integration
+    needs: check
+    if: ${{ github.event_name == 'pull_request' && github.event.pull_request.draft == false && github.event.pull_request.head.repo.id == github.event.pull_request.base.repo.id }}
+    runs-on:
+      group: ci
+      labels: [self-hosted, Linux, X64, linux-x64, build]
+    environment: oracle-live
+    permissions:
+      contents: read
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Prepare bounded temporary Cargo inputs
+        shell: bash
+        run: |
+          set -euo pipefail
+          export PATH="$HOME/.cargo/bin:$PATH"
+          cargo +1.99.1 --version
+          work="$(mktemp -d "$RUNNER_TEMP/rust-oracledb-oracle-XXXXXXXX")"
+          export CARGO_HOME="$work/cargo"
+          export CARGO_TARGET_DIR="$work/target"
+          export CARGO_INCREMENTAL=0
+          mkdir -p "$CARGO_HOME" "$CARGO_TARGET_DIR"
+          {
+            echo "RSO_CARGO_WORK=$work"
+            echo "CARGO_HOME=$CARGO_HOME"
+            echo "CARGO_TARGET_DIR=$CARGO_TARGET_DIR"
+            echo "CARGO_INCREMENTAL=0"
+          } >> "$GITHUB_ENV"
+          cargo +1.99.1 fetch --locked
+          test "$(du -sm "$CARGO_HOME" | cut -f1)" -le 512
+          test "$(du -sm "$CARGO_TARGET_DIR" | cut -f1)" -le 2048
+
+      - name: Existing approved Oracle - limited account, no DDL
+        shell: bash
+        timeout-minutes: 8
+        env:
+          RSO_TEST_CONNECT_STRING: ${{ secrets.RSO_TEST_CONNECT_STRING }}
+          RSO_TEST_MAIN_USER: ${{ secrets.RSO_TEST_MAIN_USER }}
+          RSO_TEST_MAIN_PASSWORD: ${{ secrets.RSO_TEST_MAIN_PASSWORD }}
+        run: |
+          set -euo pipefail
+          export PATH="$HOME/.cargo/bin:$PATH"
+          for required in RSO_TEST_CONNECT_STRING RSO_TEST_MAIN_USER RSO_TEST_MAIN_PASSWORD; do
+            if [[ -z "$(printenv "$required")" ]]; then
+              echo "::error title=Oracle live gate not configured::Missing oracle-live secret: $required"
+              exit 1
+            fi
+          done
+          # Exactly four existing DB integration tests; no schema setup or DDL.
+          cargo +1.99.1 test --locked --offline --test test_3600_break -- \
+            --skip test_3600_interrupt_running_query --nocapture --test-threads=1
+          test "$(du -sm "$CARGO_HOME" | cut -f1)" -le 512
+          test "$(du -sm "$CARGO_TARGET_DIR" | cut -f1)" -le 2048
+
+      - name: Optional v$session break verification
+        shell: bash
+        timeout-minutes: 4
+        env:
+          RSO_TEST_CONNECT_STRING: ${{ secrets.RSO_TEST_CONNECT_STRING }}
+          RSO_TEST_MAIN_USER: ${{ secrets.RSO_TEST_MAIN_USER }}
+          RSO_TEST_MAIN_PASSWORD: ${{ secrets.RSO_TEST_MAIN_PASSWORD }}
+          RSO_TEST_ADMIN_USER: ${{ secrets.RSO_TEST_ADMIN_USER }}
+          RSO_TEST_ADMIN_PASSWORD: ${{ secrets.RSO_TEST_ADMIN_PASSWORD }}
+        run: |
+          set -euo pipefail
+          export PATH="$HOME/.cargo/bin:$PATH"
+          if [[ -z "$RSO_TEST_ADMIN_USER" || -z "$RSO_TEST_ADMIN_PASSWORD" ]]; then
+            echo '::notice::test_3600 skipped: approved v$session account not configured'
+            exit 0
+          fi
+          cargo +1.99.1 test --locked --offline --test test_3600_break \
+            test_3600_interrupt_running_query -- --nocapture --test-threads=1
+          test "$(du -sm "$CARGO_HOME" | cut -f1)" -le 512
+          test "$(du -sm "$CARGO_TARGET_DIR" | cut -f1)" -le 2048
+
+      - name: Remove only this job's temporary Cargo workspace
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ -n "${RSO_CARGO_WORK:-}" && "$RSO_CARGO_WORK" == "$RUNNER_TEMP"/rust-oracledb-oracle-* ]]; then
+            rm -rf -- "$RSO_CARGO_WORK"
+          fi

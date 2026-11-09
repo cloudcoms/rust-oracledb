@@ -42,7 +42,6 @@ use rand::prelude::SliceRandom;
 use std::net::IpAddr;
 use std::net::SocketAddr;
 use std::net::ToSocketAddrs;
-use std::thread;
 use std::time::Duration;
 
 #[derive(Clone, PartialEq, Eq)]
@@ -611,6 +610,14 @@ impl Description {
         Ok(description)
     }
 
+    /// Returns the per-description transport timeout or the Config fallback.
+    pub(crate) fn effective_transport_connect_timeout(
+        &self,
+        default: Option<Duration>,
+    ) -> Option<Duration> {
+        self.transport_connect_timeout.or(default)
+    }
+
     /// Returns the size of the SDU to use.
     pub(crate) fn sdu(&self) -> u32 {
         self.sdu.unwrap_or(8192)
@@ -853,17 +860,20 @@ impl DescriptionOption {
     /// Attempts to establish a connection to the database using the
     /// information found in the option.
     pub(crate) fn connect(&self, client: &mut Client) -> Result<(), Error> {
-        let num_attempts = self.description.retry_count() + 1;
+        let num_attempts = self.description.retry_count().saturating_add(1);
         let retry_delay = self.description.retry_delay();
         let mut result = Err(Error::unexpected_result());
-        for _ in 0..num_attempts {
+        for attempt in 0..num_attempts {
             for option in self.address_options.iter() {
+                client.remaining_connect_time()?;
                 result = option.connect(client, self);
                 if result.is_ok() {
                     return result;
                 }
             }
-            thread::sleep(retry_delay);
+            if attempt + 1 < num_attempts {
+                client.wait_before_connect_retry(retry_delay)?;
+            }
         }
         result
     }
@@ -907,5 +917,27 @@ where
     // without failover or load balance, just the first child is active
     } else {
         children[..1].to_vec()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn description_transport_timeout_overrides_default() {
+        let default = Some(Duration::from_secs(30));
+        let mut description = Description::new();
+        assert_eq!(description.effective_transport_connect_timeout(default), default);
+
+        description.transport_connect_timeout = Some(Duration::from_millis(250));
+        assert_eq!(
+            description.effective_transport_connect_timeout(default),
+            Some(Duration::from_millis(250))
+        );
+        assert_eq!(
+            description.effective_transport_connect_timeout(None),
+            Some(Duration::from_millis(250))
+        );
     }
 }
