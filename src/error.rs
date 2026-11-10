@@ -30,6 +30,7 @@
 
 use std::error;
 use std::fmt;
+#[cfg(feature = "tls")]
 use std::io;
 use std::str;
 
@@ -175,12 +176,14 @@ impl<T> From<std::sync::PoisonError<T>> for Error {
     }
 }
 
+#[cfg(feature = "tls")]
 impl From<rustls::Error> for Error {
     fn from(e: rustls::Error) -> Error {
         Self::tls_operation(e)
     }
 }
 
+#[cfg(feature = "tls")]
 impl From<rustls::pki_types::pem::Error> for Error {
     fn from(e: rustls::pki_types::pem::Error) -> Error {
         Self::new(ErrorKind::PemFileOperation, Some(Box::new(e)))
@@ -780,8 +783,14 @@ impl Error {
         Error::new(ErrorKind::ServerVersionNotSupported, None)
     }
 
+    #[cfg(feature = "tls")]
     pub(crate) fn tls_operation(e: rustls::Error) -> Error {
         Error::new(ErrorKind::TlsOperation, Some(Box::new(e)))
+    }
+
+    #[cfg(not(feature = "tls"))]
+    pub(crate) fn tls_not_supported() -> Error {
+        Error::new(ErrorKind::TlsOperation, None)
     }
 
     pub(crate) fn tns_alias_not_found(
@@ -887,6 +896,7 @@ impl Error {
         Error::new(ErrorKind::ValueWasNull, None)
     }
 
+    #[cfg(feature = "tls")]
     pub(crate) fn wallet_password_missing_or_invalid(
         name: String,
         message: String,
@@ -897,10 +907,12 @@ impl Error {
         )
     }
 
+    #[cfg(feature = "tls")]
     pub(crate) fn wallet_missing(e: io::Error, file_name: String) -> Error {
         Error::new(ErrorKind::WalletUnreadable(file_name), Some(Box::new(e)))
     }
 
+    #[cfg(feature = "tls")]
     pub(crate) fn wallet_private_key_invalid(reason: String) -> Error {
         Error::new(ErrorKind::WalletPrivateKeyInvalid(reason), None)
     }
