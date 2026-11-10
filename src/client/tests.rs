@@ -305,6 +305,7 @@ fn connect_timeout_bounds_a_silent_listener() {
     peer.join().unwrap();
 }
 
+#[cfg(feature = "tls")]
 #[test]
 fn connect_timeout_bounds_a_silent_tcps_listener() {
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
@@ -331,6 +332,23 @@ fn connect_timeout_bounds_a_silent_tcps_listener() {
     assert_eq!(err.kind(), &ErrorKind::ConnectTimeoutExceeded);
     assert!(elapsed < Duration::from_secs(2), "took {elapsed:?}");
     peer.join().unwrap();
+}
+
+#[cfg(not(feature = "tls"))]
+#[test]
+fn tcps_fails_closed_when_tls_feature_disabled() {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let descriptor = format!(
+        "(DESCRIPTION=(ADDRESS=(PROTOCOL=tcps)(HOST=127.0.0.1)(PORT={port}))\
+         (CONNECT_DATA=(SERVICE_NAME=service)))"
+    );
+    let config = Config::default()
+        .set_connect_string(&descriptor)
+        .unwrap();
+    let mut client = Client::new(config, String::new());
+    let err = client.connect().err().unwrap();
+    assert_eq!(err.kind(), &ErrorKind::TlsOperation);
 }
 
 #[test]
