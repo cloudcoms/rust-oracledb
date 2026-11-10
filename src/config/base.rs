@@ -80,6 +80,7 @@ impl Config {
     }
 
     /// Returns the wallet password associated with the configuration.
+    #[cfg(feature = "tls")]
     pub(crate) fn get_wallet_password_bytes(&self) -> Vec<u8> {
         self.wallet_password
             .as_ref()

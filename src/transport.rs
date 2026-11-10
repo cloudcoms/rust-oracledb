@@ -35,21 +35,32 @@ use std::os::unix::io::AsRawFd;
 #[cfg(windows)]
 use std::os::windows::io::AsRawSocket;
 
+#[cfg(feature = "tls")]
 use pkcs8::DecodePrivateKey;
+#[cfg(feature = "tls")]
 use rustls::ClientConfig as TlsClientConfig;
+#[cfg(feature = "tls")]
 use rustls::ClientConnection as TlsClientConnection;
+#[cfg(feature = "tls")]
 use rustls::StreamOwned as TlsStream;
+#[cfg(feature = "tls")]
 use rustls::pki_types::CertificateDer;
+#[cfg(feature = "tls")]
 use rustls::pki_types::PrivateKeyDer;
+#[cfg(feature = "tls")]
 use rustls::pki_types::pem::PemObject;
+#[cfg(feature = "tls")]
 use rustls::sign::CertifiedKey;
 
 use std::cmp::min;
 use std::env;
+#[cfg(feature = "tls")]
 use std::fs;
 use std::io::{Read, Write};
 use std::net::TcpStream;
+#[cfg(feature = "tls")]
 use std::path::Path;
+#[cfg(feature = "tls")]
 use std::sync::Arc;
 
 use crate::config::Address;
@@ -60,6 +71,7 @@ use crate::packet::Packet;
 
 enum LowLevelTransport {
     Tcp(TcpStream),
+    #[cfg(feature = "tls")]
     Tls(Box<TlsStream<TlsClientConnection, TcpStream>>),
 }
 
@@ -68,6 +80,7 @@ impl LowLevelTransport {
     fn flush(&mut self) -> Result<(), Error> {
         match self {
             Self::Tcp(s) => Ok(s.flush()?),
+            #[cfg(feature = "tls")]
             Self::Tls(s) => Ok(s.flush()?),
         }
     }
@@ -78,11 +91,13 @@ impl LowLevelTransport {
     ) -> Result<Option<std::time::Duration>, Error> {
         match self {
             Self::Tcp(s) => Ok(s.read_timeout()?),
+            #[cfg(feature = "tls")]
             Self::Tls(s) => Ok(s.sock.read_timeout()?),
         }
     }
 
     /// Neogtiate TLS
+    #[cfg(feature = "tls")]
     fn negotiate_tls(
         self,
         server_name: &str,
@@ -113,11 +128,21 @@ impl LowLevelTransport {
         Ok(Self::Tls(Box::new(tls_stream)))
     }
 
+    #[cfg(not(feature = "tls"))]
+    fn negotiate_tls(
+        self,
+        _server_name: &str,
+        _config: &Config,
+    ) -> Result<Self, Error> {
+        Err(Error::tls_not_supported())
+    }
+
     /// Reads bytes from the low level transport and returns the number of
     /// bytes read.
     fn read(&mut self, buf: &mut [u8]) -> Result<usize, Error> {
         match self {
             Self::Tcp(s) => Ok(s.read(buf)?),
+            #[cfg(feature = "tls")]
             Self::Tls(s) => Ok(s.read(buf)?),
         }
     }
@@ -129,6 +154,7 @@ impl LowLevelTransport {
     ) -> Result<(), Error> {
         let stream = match self {
             Self::Tcp(s) => s,
+            #[cfg(feature = "tls")]
             Self::Tls(s) => &s.sock,
         };
         Ok(stream.set_read_timeout(duration)?)
@@ -141,6 +167,7 @@ impl LowLevelTransport {
     ) -> Result<(), Error> {
         let stream = match self {
             Self::Tcp(s) => s,
+            #[cfg(feature = "tls")]
             Self::Tls(s) => &s.sock,
         };
         Ok(stream.set_write_timeout(duration)?)
@@ -150,6 +177,7 @@ impl LowLevelTransport {
     fn shutdown(&mut self) -> Result<(), Error> {
         let stream = match self {
             Self::Tcp(s) => s,
+            #[cfg(feature = "tls")]
             Self::Tls(s) => {
                 s.conn.send_close_notify();
                 s.flush()?;
@@ -164,6 +192,7 @@ impl LowLevelTransport {
     fn write_all(&mut self, data: &[u8]) -> Result<(), Error> {
         match self {
             Self::Tcp(s) => Ok(s.write_all(data)?),
+            #[cfg(feature = "tls")]
             Self::Tls(s) => Ok(s.write_all(data)?),
         }
     }
@@ -185,6 +214,7 @@ pub(crate) struct Transport {
 // a custom client certificate resolver is required because the client
 // certificates supplied by Oracle Database are v1 certificates and rustls will
 // not accept anything less than v3 certificates
+#[cfg(feature = "tls")]
 #[derive(Debug)]
 struct CustomClientCertResolver {
     key: Option<Arc<CertifiedKey>>,
@@ -195,10 +225,13 @@ struct CustomClientCertResolver {
 const BYTES_PER_LINE: usize = 8;
 
 // PEM file header/footers
+#[cfg(feature = "tls")]
 const PEM_ENCRYPTED_PRIVATE_KEY_HEADER: &str =
     "-----BEGIN ENCRYPTED PRIVATE KEY-----";
+#[cfg(feature = "tls")]
 const PEM_ENCRYPTED_PRIVATE_KEY_FOOTER: &str =
     "-----END ENCRYPTED PRIVATE KEY-----";
+#[cfg(feature = "tls")]
 const PEM_UNENCRYPTED_PRIVATE_KEY_HEADER: &str = "-----BEGIN PRIVATE KEY-----";
 
 /// Returns the character to use for the given byte when displaying packet
@@ -524,10 +557,18 @@ impl Transport {
 
     /// Returns whether this transport is currently wrapped in TLS.
     pub(crate) fn uses_tls(&self) -> bool {
-        matches!(self.low_level_transport, Some(LowLevelTransport::Tls(_)))
+        #[cfg(feature = "tls")]
+        {
+            matches!(self.low_level_transport, Some(LowLevelTransport::Tls(_)))
+        }
+        #[cfg(not(feature = "tls"))]
+        {
+            false
+        }
     }
 }
 
+#[cfg(feature = "tls")]
 impl CustomClientCertResolver {
     /// Creates a new empty structure and returns it.
     fn new() -> Self {
@@ -625,6 +666,7 @@ impl CustomClientCertResolver {
     }
 }
 
+#[cfg(feature = "tls")]
 impl rustls::client::ResolvesClientCert for CustomClientCertResolver {
     fn resolve(
         &self,
